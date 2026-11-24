@@ -2,6 +2,8 @@
 
 Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry Pi or small home server. It uses React + TypeScript + Vite, Tailwind CSS with shadcn UI components (Radix primitives), Express, and SQLite.
 
+## If I forget to dos2unix any scripts (which may happen), please run dos2unix if you're getting any Linux error.
+
 ## Features
 
 - Searchable link cards grouped by department, each with an optional **link type** that shows the organisation's logo (GitHub, Google, Microsoft, YouTube, Home Assistant, Plex, Proxmox and ~75 more, auto-detected from the URL). Logos come from [Simple Icons](https://simpleicons.org) (CC0); the Microsoft mark is drawn in-app

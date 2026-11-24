@@ -2,6 +2,8 @@
 
 This folder contains a production Docker setup for Home Hub.
 
+## If I forget to dos2unix any scripts (which may happen), please run dos2unix if you're getting any Linux error.
+
 ## Files
 
 - `Dockerfile` - Builds the app and runs Express on port `3001`

@@ -1,6 +1,6 @@
 # Home Hub
 
-Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry Pi or small home server. It uses React + TypeScript + Vite, shadcn-style Radix/Tailwind components, Express, and SQLite.
+Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry Pi or small home server. It uses React + TypeScript + Vite, Tailwind CSS with shadcn UI components (Radix primitives), Express, and SQLite.
 
 ## Features
 
@@ -20,6 +20,7 @@ Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry 
 - Live data viewer uses a carousel with a scrollable integration details panel
 - Integration import now uses a safer append/replace dialog flow to avoid accidental wipeouts
 - Friendly top-screen red error toasts for request/runtime failures, including integration test failures
+- Responsive layout styling managed with Tailwind utilities and shadcn UI building blocks
 - Customizable site branding including logo and favicon uploads
 - Dark and light themes
 - Cookie-backed login sessions

@@ -13,7 +13,7 @@ services:
     expose:
       - "3001"
     volumes:
-      - ../data:/app/data
+      - home_hub_data:/app/data
     restart: unless-stopped
     healthcheck:
       test:
@@ -46,3 +46,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  home_hub_data:

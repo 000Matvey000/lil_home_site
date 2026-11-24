@@ -2,10 +2,8 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DockerDir = Resolve-Path (Join-Path $ScriptDir "..")
-$RootDir = Resolve-Path (Join-Path $DockerDir "..")
 $EnvFile = Join-Path $DockerDir ".env"
 $EnvTemplate = Join-Path $DockerDir ".env.example"
-$DataDir = Join-Path $RootDir "data"
 
 if (-not (Test-Path $EnvFile)) {
   Copy-Item -Path $EnvTemplate -Destination $EnvFile
@@ -22,9 +20,4 @@ if ($envContent -match "^JWT_SECRET=replace-with-a-random-secret$" -or $envConte
   Write-Host "Generated JWT_SECRET in $EnvFile."
 }
 
-if (-not (Test-Path $DataDir)) {
-  New-Item -ItemType Directory -Path $DataDir | Out-Null
-}
-
-Write-Host "Ensured data directory exists at $DataDir."
 Write-Host "Docker setup complete."

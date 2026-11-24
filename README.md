@@ -45,6 +45,7 @@ On first start, SQLite is created at `data/lil_home_site.sqlite`. The seed creat
 - Password: `change-me-now`
 
 Change this password by creating a new admin or updating the seed environment and database. The seed only runs for an empty database.
+For production, never keep the default password.
 
 For a custom initial admin:
 

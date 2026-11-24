@@ -50,11 +50,12 @@ docker compose -f .\docker\compose.prod.yaml up -d --build
 
 Open: `https://localhost` (or `https://localhost:${CADDY_HTTPS_PORT}` if you changed it)
 
+> Run either `compose.yaml` (HTTP) or `compose.prod.yaml` (Caddy HTTPS), not both at the same time.
+
 ## What setup scripts do
 
 1. Copy `docker/.env.example` to `docker/.env` if missing
 2. Generate a random `JWT_SECRET` if still using placeholder value
-3. Ensure host `data/` folder exists for SQLite persistence
 
 ## Useful commands
 
@@ -62,10 +63,11 @@ Open: `https://localhost` (or `https://localhost:${CADDY_HTTPS_PORT}` if you cha
 docker compose -f docker/compose.yaml ps
 docker compose -f docker/compose.yaml logs -f
 docker compose -f docker/compose.yaml down
-docker compose -f docker/compose.yaml down -v
+docker compose -f docker/compose.yaml down -v # Remove volumes as well
 docker compose -f docker/compose.prod.yaml ps
 docker compose -f docker/compose.prod.yaml logs -f caddy
-docker compose -f docker/compose.prod.yaml down
+docker compose -f docker/compose.prod.yaml logs -f home-hub
+docker compose -f docker/compose.prod.yaml down -v # Remove volumes as well
 ```
 
 ## Environment variables (`docker/.env`)
@@ -82,11 +84,47 @@ docker compose -f docker/compose.prod.yaml down
 
 - Compose restart policy: `unless-stopped`
 - Container health check: `GET /healthz` every 30s
-- Persistent database: host `data/` mounted to `/app/data`
+- Persistent database:
+  - `compose.yaml`: Docker named volume `home_hub_data`
+  - `compose.prod.yaml`: Docker named volume `home_hub_data`
 - Caddy manages HTTPS certificates. Current default uses `tls internal` for LAN/self-managed trust.
+- Production compose uses Docker named volumes (`home_hub_data`, `caddy_data`, `caddy_config`) to avoid host filesystem locking issues with SQLite.
 
 ### Trusted HTTPS notes for home network
 
 - Default (`tls internal`) works immediately, but browsers/devices must trust Caddy's internal root CA.
 - For publicly trusted certs, set `CADDY_HOST` to a real DNS name and update [Caddyfile](./caddy/Caddyfile) to use ACME (remove `tls internal`).
 
+## Production volume management
+
+Inspect production volumes:
+
+```bash
+docker volume ls | grep -E "home_hub_data|caddy_data|caddy_config"
+```
+
+PowerShell equivalent:
+
+```powershell
+docker volume ls | Select-String "home_hub_data|caddy_data|caddy_config"
+```
+
+Back up SQLite from the named volume:
+
+```bash
+docker run --rm -v docker_home_hub_data:/from -v "$PWD":/to alpine cp /from/lil_home_site.sqlite /to/home-hub-backup.sqlite
+```
+
+PowerShell equivalent:
+
+```powershell
+docker run --rm -v docker_home_hub_data:/from -v "${PWD}:/to" alpine cp /from/lil_home_site.sqlite /to/home-hub-backup.sqlite
+```
+
+## Troubleshooting
+
+- If `home-hub` is unhealthy, check logs:
+  - `docker compose -f docker/compose.yaml logs -f home-hub`
+  - `docker compose -f docker/compose.prod.yaml logs -f home-hub`
+- If ports are already in use (80/443/3001), stop old stacks or change `PORT`, `CADDY_HTTP_PORT`, `CADDY_HTTPS_PORT` in `docker/.env`.
+- If HTTPS warns as untrusted on LAN, that is expected with `tls internal` until client devices trust Caddy's internal root CA.

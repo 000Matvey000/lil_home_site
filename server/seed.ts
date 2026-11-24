@@ -5,9 +5,6 @@ export function seed() {
   const defaultSettings: Record<string, string> = {
     siteName: "Home Hub",
     headerSubtitle: "Quick links & updates",
-    heroBadge: "Home communications",
-    heroTitle: "Everything close to home.",
-    heroDescription: "Find useful links and catch the latest announcements.",
     announcementsTitle: "Announcements",
     linksTitle: "Useful links",
     footerText: "Home Hub keeps your household informed.",

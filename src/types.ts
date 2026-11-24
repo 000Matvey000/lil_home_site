@@ -31,14 +31,12 @@ export type Announcement = {
 export type SiteSettings = {
   siteName: string;
   headerSubtitle: string;
-  heroBadge: string;
-  heroTitle: string;
-  heroDescription: string;
   announcementsTitle: string;
   linksTitle: string;
   footerText: string;
   logoUrl: string;
   faviconUrl: string;
+  bannerUrl: string;
   showHero: boolean;
   showIntegrations: boolean;
   showAnnouncements: boolean;

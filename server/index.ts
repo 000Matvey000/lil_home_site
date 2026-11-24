@@ -294,6 +294,7 @@ function getAssetMeta() {
   return {
     logoUrl: indexed.has("logo") ? `/api/assets/logo?v=${encodeURIComponent(indexed.get("logo") as string)}` : "",
     faviconUrl: indexed.has("favicon") ? `/api/assets/favicon?v=${encodeURIComponent(indexed.get("favicon") as string)}` : "",
+    bannerUrl: indexed.has("banner") ? `/api/assets/banner?v=${encodeURIComponent(indexed.get("banner") as string)}` : "",
   };
 }
 
@@ -325,7 +326,7 @@ app.get("/api/settings", (_req, res) => {
 
 app.put("/api/settings", auth, admin, (req, res) => {
   const upsert = db.prepare("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-  const editableTextKeys = ["siteName", "headerSubtitle", "heroBadge", "heroTitle", "heroDescription", "announcementsTitle", "linksTitle", "footerText"];
+  const editableTextKeys = ["siteName", "headerSubtitle", "announcementsTitle", "linksTitle", "footerText"];
   const editableBooleanKeys = ["showHero", "showIntegrations", "showAnnouncements", "showLinks"];
   db.transaction(() => {
     for (const key of editableTextKeys) {
@@ -342,7 +343,7 @@ app.put("/api/settings", auth, admin, (req, res) => {
 
 app.put("/api/assets/:key", auth, admin, (req, res) => {
   const key = String(req.params.key ?? "");
-  if (!["logo", "favicon"].includes(key)) return res.status(400).json({ error: "Unsupported asset key" });
+  if (!["logo", "favicon", "banner"].includes(key)) return res.status(400).json({ error: "Unsupported asset key" });
   const { name, base64 } = req.body as { name?: string; base64?: string };
   if (!name || !base64) return res.status(400).json({ error: "Asset name and base64 are required" });
   try {

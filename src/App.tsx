@@ -16,14 +16,12 @@ type HomeSectionKey = "showHero" | "showIntegrations" | "showAnnouncements" | "s
 const defaultSettings: SiteSettings = {
   siteName: "Home Hub",
   headerSubtitle: "Quick links & updates",
-  heroBadge: "Home communications",
-  heroTitle: "Everything close to home.",
-  heroDescription: "Find useful links and catch the latest announcements.",
   announcementsTitle: "Announcements",
   linksTitle: "Useful links",
   footerText: "Home Hub keeps your household informed.",
   logoUrl: "",
   faviconUrl: "",
+  bannerUrl: "",
   showHero: true,
   showIntegrations: true,
   showAnnouncements: true,
@@ -749,14 +747,13 @@ function AdminDialog({ open, onOpenChange, settings, onSaved, setError }: {
     try {
       const logoFile = form.get("logo") as File;
       const faviconFile = form.get("favicon") as File;
+      const bannerFile = form.get("banner") as File;
       if (logoFile?.size) await api.uploadAsset("logo", await readFile(logoFile));
       if (faviconFile?.size) await api.uploadAsset("favicon", await readFile(faviconFile));
+      if (bannerFile?.size) await api.uploadAsset("banner", await readFile(bannerFile));
       await api.updateSettings({
         siteName: form.get("siteName"),
         headerSubtitle: form.get("headerSubtitle"),
-        heroBadge: form.get("heroBadge"),
-        heroTitle: form.get("heroTitle"),
-        heroDescription: form.get("heroDescription"),
         announcementsTitle: form.get("announcementsTitle"),
         linksTitle: form.get("linksTitle"),
         footerText: form.get("footerText"),
@@ -786,12 +783,10 @@ function AdminDialog({ open, onOpenChange, settings, onSaved, setError }: {
           <form className="form" onSubmit={saveSettings}>
             <label>Site name<Input name="siteName" defaultValue={settings.siteName} /></label>
             <label>Header subtitle<Input name="headerSubtitle" defaultValue={settings.headerSubtitle} /></label>
-            <label>Hero badge<Input name="heroBadge" defaultValue={settings.heroBadge} /></label>
-            <label>Hero title<Input name="heroTitle" defaultValue={settings.heroTitle} /></label>
-            <label>Hero description<textarea name="heroDescription" defaultValue={settings.heroDescription} /></label>
             <div className="form-row"><label>Announcements title<Input name="announcementsTitle" defaultValue={settings.announcementsTitle} /></label><label>Links title<Input name="linksTitle" defaultValue={settings.linksTitle} /></label></div>
             <label>Footer text<Input name="footerText" defaultValue={settings.footerText} /></label>
             <label>Site logo<input name="logo" type="file" accept="image/*" /></label>
+            <label>Home banner image (recommended 1600x420)<input name="banner" type="file" accept="image/*" /></label>
             <label>Tab icon (favicon)<input name="favicon" type="file" accept="image/x-icon,image/png,image/svg+xml" /></label>
             <Button type="submit">Save settings</Button>
           </form>
@@ -994,23 +989,23 @@ export function App() {
           <IntegrationSetupPage integrations={integrations} onRefresh={refresh} setError={setError} />
         ) : (
           <>
-            {(settings.showHero || isAdmin) && <section aria-label="Hero">
-              <div className="section-heading">
-                <div><h2>Hero</h2></div>
-                {isAdmin && (
+            {(isAdmin || (settings.showHero && Boolean(settings.bannerUrl))) && <section className="banner-section" aria-label="Home banner">
+              {isAdmin && (
+                <div className="section-heading">
+                  <div><h2>Home banner</h2></div>
                   <Button variant="outline" size="sm" onClick={() => toggleHomeSection("showHero")}>
                     {settings.showHero ? "Hide section" : "Show section"}
                   </Button>
-                )}
-              </div>
-              {settings.showHero && <div className="hero">
-                <div>
-                  <Badge className="hero-badge">{settings.heroBadge}</Badge>
-                  <h1>{settings.heroTitle}</h1>
-                  <p>{settings.heroDescription}</p>
                 </div>
-                {isAdmin && <LinkDialog onSaved={refresh} setError={setError} />}
-              </div>}
+              )}
+              {settings.showHero && settings.bannerUrl && (
+                <div className="banner-frame">
+                  <img src={settings.bannerUrl} className="banner-image" alt={`${settings.siteName} banner`} />
+                </div>
+              )}
+              {isAdmin && settings.showHero && !settings.bannerUrl && (
+                <Card className="banner-empty">No banner image uploaded yet. Use <strong>Manage</strong> to upload one.</Card>
+              )}
             </section>}
             {(settings.showIntegrations || isAdmin) && <section className="integrations" aria-label="Live data">
               <div className="section-heading">
@@ -1099,7 +1094,7 @@ export function App() {
                   </>}
                   {isAdmin && (
                     <>
-                      {!settings.showHero && settings.showLinks && <LinkDialog onSaved={refresh} setError={setError} />}
+                      {settings.showLinks && <LinkDialog onSaved={refresh} setError={setError} />}
                       <Button variant="outline" size="sm" onClick={() => toggleHomeSection("showLinks")}>
                         {settings.showLinks ? "Hide section" : "Show section"}
                       </Button>

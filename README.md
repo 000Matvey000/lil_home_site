@@ -26,8 +26,9 @@ Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry 
 - Dark and light themes
 - Cookie-backed login sessions
 - `user` and `admin` roles
-- Admin tools for link editing, announcements, users, integrations, and customizable site text (header, hero, section labels, footer)
-- Admin setting toggles to show/hide home sections (hero, live data, announcements, links), persisted in site settings
+- Admin tools for link editing, announcements, users, integrations, and customizable site text (header, section labels, footer)
+- Admin-managed branding uploads for logo, favicon, and homepage banner image
+- Admin setting toggles to show/hide home sections (banner, live data, announcements, links), persisted in site settings
 - SQLite BLOB storage for thumbnails and attachments
 
 ## Local development

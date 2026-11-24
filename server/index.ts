@@ -20,9 +20,11 @@ if (isProduction && (!process.env.JWT_SECRET || process.env.JWT_SECRET === "deve
 
 app.use(
   helmet({
+    contentSecurityPolicy: false,
     crossOriginResourcePolicy: false,
     crossOriginOpenerPolicy: false,
     originAgentCluster: false,
+    strictTransportSecurity: false,
   }),
 );
 app.use(cors({ origin: true, credentials: true }));

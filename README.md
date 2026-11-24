@@ -241,3 +241,5 @@ Docker artifacts are in [docker/](/C:/Users/codce/repos/lil_home_site/docker/).
 - Image build file: [docker/Dockerfile](/C:/Users/codce/repos/lil_home_site/docker/Dockerfile)
 
 For LAN access by IP address on browsers, prefer the Caddy HTTPS stack to avoid browser trust/isolation warnings on plain HTTP.
+If your browser starts forcing `https://<host>:3001` for the HTTP stack, clear the HSTS entry for that host and reload `http://<host>:3001`.
+`compose.yaml` serves HTTP only; `https://<host>:3001` will fail by design.

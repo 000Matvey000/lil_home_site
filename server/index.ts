@@ -13,6 +13,9 @@ const app = express();
 const port = Number(process.env.PORT || 3001);
 const jwtSecret = process.env.JWT_SECRET || "development-only-change-this-secret";
 const isProduction = process.env.NODE_ENV === "production";
+const secureCookies = process.env.COOKIE_SECURE
+  ? ["1", "true", "yes", "on"].includes(process.env.COOKIE_SECURE.toLowerCase())
+  : isProduction;
 
 if (isProduction && (!process.env.JWT_SECRET || process.env.JWT_SECRET === "development-only-change-this-secret")) {
   throw new Error("JWT_SECRET must be explicitly set in production.");
@@ -293,12 +296,12 @@ app.post("/api/auth/login", (req, res) => {
   }
   const payload: AuthUser = { id: user.id, username: user.username, role: user.role };
   const token = jwt.sign(payload, jwtSecret, { expiresIn: "7d" });
-  res.cookie("token", token, { httpOnly: true, sameSite: "strict", secure: isProduction, maxAge: 7 * 24 * 60 * 60 * 1000 });
+  res.cookie("token", token, { httpOnly: true, sameSite: "strict", secure: secureCookies, maxAge: 7 * 24 * 60 * 60 * 1000 });
   res.json({ user: payload });
 });
 
 app.post("/api/auth/logout", (_req, res) => {
-  res.clearCookie("token");
+  res.clearCookie("token", { httpOnly: true, sameSite: "strict", secure: secureCookies });
   res.status(204).end();
 });
 

@@ -61,6 +61,7 @@ ADMIN_USERNAME=your-admin ADMIN_PASSWORD="use-a-long-random-password" npm run se
 | `DATA_DIR` | `./data` | Directory containing the SQLite database |
 | `JWT_SECRET` | Development fallback | Secret used to sign login cookies; always set a random value in production |
 | `NODE_ENV` | unset | Set to `production` to mark login cookies as secure |
+| `COOKIE_SECURE` | `NODE_ENV === production` | Override cookie `Secure` flag (`true` for HTTPS, `false` for plain HTTP) |
 | `ADMIN_USERNAME` | `admin` | Username used for first-run seeding |
 | `ADMIN_PASSWORD` | `change-me-now` | Password used for first-run seeding |
 

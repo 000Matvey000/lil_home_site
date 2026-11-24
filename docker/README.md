@@ -77,6 +77,7 @@ docker compose -f docker/compose.prod.yaml down -v # Remove volumes as well
 - `CADDY_HTTP_PORT` (default `80`)
 - `CADDY_HTTPS_PORT` (default `443`)
 - `CADDY_HOST` (default `localhost`; set to your LAN DNS name if available)
+- `COOKIE_SECURE` (set by compose profile: `false` in `compose.yaml`, `true` in `compose.prod.yaml`)
 - `JWT_SECRET` (required in production; setup script auto-generates)
 - `ADMIN_USERNAME` (default `admin`)
 - `ADMIN_PASSWORD` (default `change-me-now`, change immediately)
@@ -134,3 +135,4 @@ docker run --rm -v docker_home_hub_data:/from -v "${PWD}:/to" alpine cp /from/li
 - If HTTP mode still upgrades assets to HTTPS, ensure you are running the newest image (`docker compose -f docker/compose.yaml up -d --build --force-recreate`) and then hard-refresh the browser.
 - Verify the running HTTP headers are updated (should not include `Strict-Transport-Security` or CSP `upgrade-insecure-requests`):
   - `curl -I http://<host>:3001`
+- One `GET /api/auth/me 401` before login is expected. If login appears successful but `GET /api/auth/me` keeps returning `401`, recreate containers with the latest compose files so HTTP mode uses `COOKIE_SECURE=false`.

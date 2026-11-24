@@ -3,19 +3,19 @@ import { ChevronLeft, ChevronRight, ImageOff, Pause, Play } from "lucide-react";
 import type { Photo } from "../../types";
 import { cn } from "../../lib/utils";
 
-export const PHOTO_INTERVAL_MS = 3000;
+const DEFAULT_INTERVAL_MS = 3000;
 const MAX_DOTS = 12;
 const SWIPE_THRESHOLD_PX = 40;
 
 /**
  * Auto-rotating photo carousel.
  *
- * - Advances every 3 seconds; manual navigation restarts the countdown.
+ * - Advances every `intervalMs` (Admin › Photos › Seconds per photo); manual navigation restarts the countdown.
  * - Pauses while a mouse hovers it or keyboard focus is inside it, and has an
  *   explicit pause button (needed for touch screens and WCAG 2.2.2).
  * - Swipe on touch devices, arrow keys when focused.
  */
-export function PhotoCarousel({ photos, label }: { photos: Photo[]; label: string }) {
+export function PhotoCarousel({ photos, label, intervalMs = DEFAULT_INTERVAL_MS }: { photos: Photo[]; label: string; intervalMs?: number }) {
   const count = photos.length;
   // `previous` is the slide fading out, kept rendered so the crossfade works.
   const [position, setPosition] = useState({ index: 0, previous: -1 });
@@ -42,9 +42,9 @@ export function PhotoCarousel({ photos, label }: { photos: Photo[]; label: strin
 
   useEffect(() => {
     if (!running) return;
-    const timer = window.setTimeout(() => goTo((current) => (current + 1) % count), PHOTO_INTERVAL_MS);
+    const timer = window.setTimeout(() => goTo((current) => (current + 1) % count), intervalMs);
     return () => window.clearTimeout(timer);
-  }, [running, active, count, goTo]);
+  }, [running, active, count, goTo, intervalMs]);
 
   const go = useCallback((delta: number) => goTo((current) => (current + delta + count) % count), [count, goTo]);
 
@@ -134,7 +134,7 @@ export function PhotoCarousel({ photos, label }: { photos: Photo[]; label: strin
             </button>
           </>
         )}
-        {running && <div key={active} className="carousel-progress" style={{ animationDuration: `${PHOTO_INTERVAL_MS}ms` }} />}
+        {running && <div key={active} className="carousel-progress" style={{ animationDuration: `${intervalMs}ms` }} />}
       </div>
 
       {count > 1 && (

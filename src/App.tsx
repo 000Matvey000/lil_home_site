@@ -5,6 +5,7 @@ import { ChevronDown, Home, LogIn, LogOut, Moon, Settings, ShieldAlert, Sun, X }
 import { api } from "./api";
 import type { Announcement, IntegrationData, LinkRecord, Photo, SiteSettings, User } from "./types";
 import { defaultSettings, errorMessage, normalizeSettings, updateFavicon } from "./lib/helpers";
+import { applySiteFont } from "./lib/fonts";
 import { navigate, routeHref, useHashRoute } from "./lib/router";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
@@ -87,6 +88,7 @@ function AppShell() {
   }, [theme]);
 
   useEffect(() => updateFavicon(settings.faviconUrl), [settings.faviconUrl]);
+  useEffect(() => applySiteFont(settings.fontFamily), [settings.fontFamily]);
   useEffect(() => {
     document.title = route.page === "admin" ? `Admin · ${settings.siteName}` : settings.siteName;
   }, [settings.siteName, route.page]);
@@ -122,6 +124,7 @@ function AppShell() {
     content = (
       <HomePage
         settings={settings}
+        setSettings={setSettings}
         links={links}
         announcements={announcements}
         photos={photos}

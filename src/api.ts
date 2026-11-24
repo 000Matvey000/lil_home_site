@@ -14,7 +14,8 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export type AssetKey = "logo" | "favicon" | "banner";
-export type PhotoInput = { caption: string; url?: string; file?: FileValue };
+/** Every field is optional on update; only what is sent changes. */
+export type PhotoInput = { caption?: string; order?: number; url?: string; file?: FileValue };
 
 export const api = {
   me: () => request<{ user: User | null }>("/api/auth/me"),

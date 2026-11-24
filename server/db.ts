@@ -109,6 +109,11 @@ if (!hasColumn("integrations", "is_public")) {
   db.exec("ALTER TABLE integrations ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0,1))");
 }
 
+// Optional brand logo for a link (e.g. "github"); "" means none.
+if (!hasColumn("links", "link_type")) {
+  db.exec("ALTER TABLE links ADD COLUMN link_type TEXT NOT NULL DEFAULT ''");
+}
+
 // Bumped whenever a password changes; sessions carry it and are rejected once
 // it no longer matches, so a reset signs out every existing session.
 if (!hasColumn("users", "token_version")) {

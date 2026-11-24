@@ -5,9 +5,13 @@ import { api } from "../../api";
 import type { Announcement, LinkRecord } from "../../types";
 import { errorMessage, readFile } from "../../lib/helpers";
 import { prepareImageUpload } from "../../lib/image";
+import { detectBrand, getBrand } from "../../lib/brands";
 import { Button } from "../ui/button";
 import { Field, Input, Textarea } from "../ui/input";
+import { BrandPicker } from "../brand-picker";
 import { useToast } from "../toast";
+
+const DEFAULT_ACCENT = "#5b5bf6";
 
 /** Thumbnails render at 52px; 512px leaves headroom for high-DPI screens. */
 const THUMBNAIL_MAX_PX = 512;
@@ -97,13 +101,42 @@ export function LinkDialog({ item, onSaved, compact = false }: { item?: LinkReco
   const [saving, setSaving] = useState(false);
   const [removeThumbnail, setRemoveThumbnail] = useState(false);
   const [removeAttachment, setRemoveAttachment] = useState(false);
+  const [linkType, setLinkType] = useState("");
+  // "picked" = chosen by hand (or already saved), so typing a URL won't override it.
+  const [typeSource, setTypeSource] = useState<"picked" | "auto">("auto");
+  const [color, setColor] = useState(DEFAULT_ACCENT);
+  const [colorTouched, setColorTouched] = useState(false);
 
   function changeOpen(next: boolean) {
     if (next) {
       setRemoveThumbnail(false);
       setRemoveAttachment(false);
+      setColor(item?.color || DEFAULT_ACCENT);
+      // Existing links keep their colour unless the admin picks a brand.
+      setColorTouched(Boolean(item));
+      if (item?.linkType) {
+        setLinkType(item.linkType);
+        setTypeSource("picked");
+      } else {
+        setLinkType(detectBrand(item?.url ?? "")?.key ?? "");
+        setTypeSource("auto");
+      }
     }
     setOpen(next);
+  }
+
+  function pickType(key: string) {
+    setLinkType(key);
+    setTypeSource("picked");
+    const brand = getBrand(key);
+    if (brand) setColor(`#${brand.hex}`);
+  }
+
+  function onUrlChange(url: string) {
+    if (typeSource === "picked") return;
+    const brand = detectBrand(url);
+    setLinkType(brand?.key ?? "");
+    if (brand && !colorTouched) setColor(`#${brand.hex}`);
   }
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
@@ -119,7 +152,8 @@ export function LinkDialog({ item, onSaved, compact = false }: { item?: LinkReco
         description: form.get("description"),
         department: form.get("department"),
         category: form.get("category"),
-        color: form.get("color"),
+        color,
+        linkType,
       };
       if (thumbnailFile?.size) value.thumbnail = await prepareImageUpload(thumbnailFile, { maxDimension: THUMBNAIL_MAX_PX });
       else if (removeThumbnail) value.removeThumbnail = true;
@@ -145,11 +179,14 @@ export function LinkDialog({ item, onSaved, compact = false }: { item?: LinkReco
     <EditorShell open={open} onOpenChange={changeOpen} trigger={trigger} title={item ? "Edit link" : "Add a link"} description="Where it goes, how it's grouped, and optional files.">
       <form className="form" onSubmit={submit}>
         <Field label="Title"><Input name="title" defaultValue={item?.title} required autoFocus /></Field>
-        <Field label="URL"><Input name="url" type="url" defaultValue={item?.url} placeholder="https://" /></Field>
+        <Field label="URL"><Input name="url" type="url" defaultValue={item?.url} placeholder="https://" onChange={(e) => onUrlChange(e.target.value)} /></Field>
+        <BrandPicker value={linkType} onChange={pickType} autoDetected={typeSource === "auto" && Boolean(linkType)} />
         <Field label="Description"><Textarea name="description" defaultValue={item?.description} /></Field>
         <div className="form-grid form-grid-accent">
           <Field label="Group"><Input name="department" defaultValue={item?.department || "General"} /></Field>
-          <Field label="Accent"><input className="color-input" name="color" type="color" defaultValue={item?.color || "#5b5bf6"} /></Field>
+          <Field label="Accent">
+            <input className="color-input" type="color" value={color} onChange={(e) => { setColor(e.target.value); setColorTouched(true); }} />
+          </Field>
         </div>
         <Field label="Categories" hint="Comma-separated, e.g. News, Finance, Video"><Input name="category" defaultValue={item?.category || ""} /></Field>
         <div className="form-grid">
@@ -212,7 +249,7 @@ export function AnnouncementDialog({ item, onSaved, compact = false }: { item?: 
         <Field label="Message"><Textarea name="body" defaultValue={item?.body} /></Field>
         <div className="form-grid form-grid-accent">
           <Field label="Categories" hint="Comma-separated, e.g. General, Alerts"><Input name="category" defaultValue={item?.category || ""} /></Field>
-          <Field label="Accent"><input className="color-input" name="color" type="color" defaultValue={item?.color || "#5b5bf6"} /></Field>
+          <Field label="Accent"><input className="color-input" name="color" type="color" defaultValue={item?.color || DEFAULT_ACCENT} /></Field>
         </div>
         <div className="dialog-actions">
           <Dialog.Close asChild><Button type="button" variant="outline">Cancel</Button></Dialog.Close>

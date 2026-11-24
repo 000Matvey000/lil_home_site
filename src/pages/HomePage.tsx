@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Activity, Bell, ChevronLeft, ChevronRight, ExternalLink, FileDown, Images, Link2, Lock, Search, Settings2, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { Announcement, IntegrationData, LinkRecord, Photo, SiteSettings } from "../types";
-import { categoryFilterMatch, parseCategoryText } from "../lib/helpers";
+import { categoryFilterMatch, orderedSections, parseCategoryText, type HomeSectionKey } from "../lib/helpers";
+import { BrandIcon, brandStyle, getBrand } from "../lib/brands";
 import { routeHref, type AdminTab } from "../lib/router";
-import { cn } from "../lib/utils";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -13,9 +13,11 @@ import { ConfirmDialog } from "../components/confirm-dialog";
 import { AnnouncementDialog, LinkDialog } from "../components/home/editors";
 import { PhotoCarousel } from "../components/home/PhotoCarousel";
 import { IntegrationFields } from "../components/integration-field";
+import { SectionToggles } from "../components/section-toggles";
 
 type HomePageProps = {
   settings: SiteSettings;
+  setSettings: React.Dispatch<React.SetStateAction<SiteSettings>>;
   links: LinkRecord[];
   announcements: Announcement[];
   photos: Photo[];
@@ -25,54 +27,72 @@ type HomePageProps = {
   onContentChanged: () => Promise<void>;
 };
 
-export function HomePage({ settings, links, announcements, photos, liveData, liveDataLoading, isAdmin, onContentChanged }: HomePageProps) {
+export function HomePage({ settings, setSettings, links, announcements, photos, liveData, liveDataLoading, isAdmin, onContentChanged }: HomePageProps) {
   // Visitors only see sections that are switched on *and* have something in
   // them; admins also see empty sections so they know where to add content.
-  const showPhotos = settings.showPhotos && (photos.length > 0 || isAdmin);
-  const showLiveData = settings.showIntegrations && (liveData.length > 0 || liveDataLoading || isAdmin);
-  const nothingVisible = !settings.showHero && !showPhotos && !showLiveData && !settings.showAnnouncements && !settings.showLinks;
+  const hasBannerContent = Boolean(settings.bannerUrl || settings.bannerTitle || settings.bannerSubtitle);
+  const visible: Record<HomeSectionKey, boolean> = {
+    showHero: settings.showHero && hasBannerContent,
+    showPhotos: settings.showPhotos && (photos.length > 0 || isAdmin),
+    showIntegrations: settings.showIntegrations && (liveData.length > 0 || liveDataLoading || isAdmin),
+    showAnnouncements: settings.showAnnouncements && (announcements.length > 0 || isAdmin),
+    showLinks: settings.showLinks,
+  };
+  const sections = orderedSections(settings).filter(({ key }) => visible[key]);
+  // The admin's section toggles sit on the banner when it's at the top of the
+  // page; otherwise (or when the banner is hidden) they get their own row.
+  const togglesOnBanner = isAdmin && sections[0]?.key === "showHero";
+
+  const render: Record<HomeSectionKey, () => React.ReactNode> = {
+    showHero: () => (
+      <Banner settings={settings}>
+        {togglesOnBanner && <SectionToggles settings={settings} setSettings={setSettings} overlay />}
+      </Banner>
+    ),
+    showPhotos: () => (
+      <section className="home-section" aria-labelledby="photos-heading">
+        <SectionHeading id="photos-heading" icon={<Images size={18} />} title={settings.photosTitle}>
+          {isAdmin && <ManageLink tab="photos" label="Manage photos" />}
+        </SectionHeading>
+        {photos.length
+          ? <PhotoCarousel photos={photos} label={settings.photosTitle} intervalMs={settings.photoIntervalSeconds * 1000} />
+          : <EmptyState tab="photos" message="No photos yet." action="Add photos" />}
+      </section>
+    ),
+    showIntegrations: () => <LiveDataSection data={liveData} loading={liveDataLoading} isAdmin={isAdmin} />,
+    showAnnouncements: () => (
+      <AnnouncementsSection title={settings.announcementsTitle} announcements={announcements} isAdmin={isAdmin} onChanged={onContentChanged} />
+    ),
+    showLinks: () => <LinksSection title={settings.linksTitle} links={links} isAdmin={isAdmin} onChanged={onContentChanged} />,
+  };
 
   return (
     <div className="home-page">
-      {settings.showHero && settings.bannerUrl && (
-        <div className="banner-frame">
-          <img src={settings.bannerUrl} className="banner-image" alt={`${settings.siteName} banner`} />
-        </div>
-      )}
-
-      {(showPhotos || showLiveData) && (
-        <div className={cn("feature-row", showPhotos && showLiveData && "has-two")}>
-          {showPhotos && (
-            <section className="home-section" aria-labelledby="photos-heading">
-              <SectionHeading id="photos-heading" icon={<Images size={18} />} title={settings.photosTitle}>
-                {isAdmin && <ManageLink tab="photos" label="Manage photos" />}
-              </SectionHeading>
-              {photos.length
-                ? <PhotoCarousel photos={photos} label={settings.photosTitle} />
-                : <EmptyState tab="photos" message="No photos yet." action="Add photos" />}
-            </section>
-          )}
-          {showLiveData && (
-            <LiveDataSection data={liveData} loading={liveDataLoading} isAdmin={isAdmin} />
-          )}
-        </div>
-      )}
-
-      {settings.showAnnouncements && (
-        <AnnouncementsSection title={settings.announcementsTitle} announcements={announcements} isAdmin={isAdmin} onChanged={onContentChanged} />
-      )}
-
-      {settings.showLinks && (
-        <LinksSection title={settings.linksTitle} links={links} isAdmin={isAdmin} onChanged={onContentChanged} />
-      )}
-
-      {nothingVisible && (
+      {isAdmin && !togglesOnBanner && <SectionToggles settings={settings} setSettings={setSettings} />}
+      {sections.map(({ key }) => <Fragment key={key}>{render[key]()}</Fragment>)}
+      {!sections.length && (
         <Card className="empty-state">
           Every home section is hidden.
-          {isAdmin && <> <a className="text-link" href={routeHref({ page: "admin", tab: "customize" })}>Turn some back on</a>.</>}
+          {isAdmin && " Use the section buttons above to turn some back on."}
         </Card>
       )}
     </div>
+  );
+}
+
+function Banner({ settings, children }: { settings: SiteSettings; children?: React.ReactNode }) {
+  const hasText = Boolean(settings.bannerTitle || settings.bannerSubtitle);
+  return (
+    <section className="banner-frame" data-has-image={Boolean(settings.bannerUrl)} data-has-text={hasText} aria-label="Banner">
+      {settings.bannerUrl && <img src={settings.bannerUrl} className="banner-image" alt="" />}
+      {children}
+      {hasText && (
+        <div className="banner-text">
+          {settings.bannerTitle && <h1>{settings.bannerTitle}</h1>}
+          {settings.bannerSubtitle && <p>{settings.bannerSubtitle}</p>}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -242,10 +262,19 @@ function LinksSection({ title, links, isAdmin, onChanged }: { title: string; lin
 
 function LinkCard({ link, isAdmin, onChanged }: { link: LinkRecord; isAdmin: boolean; onChanged: () => Promise<void> }) {
   const tags = parseCategoryText(link.category);
+  const brand = getBrand(link.linkType);
+  // Uploaded thumbnail > brand logo > initials. With both, the logo becomes a corner badge.
   return (
     <Card className="link-card" style={{ "--accent": link.color } as React.CSSProperties}>
-      <div className="link-thumb">
-        {link.thumbnail ? <img src={link.thumbnail.url} alt="" loading="lazy" /> : <span>{link.title.slice(0, 2).toUpperCase()}</span>}
+      <div className="link-thumb" data-brand={brand && !link.thumbnail ? brand.key : undefined} style={brand ? brandStyle(brand) : undefined}>
+        {link.thumbnail
+          ? <img src={link.thumbnail.url} alt="" loading="lazy" />
+          : brand
+            ? <BrandIcon brand={brand} size={26} className="brand-logo" />
+            : <span>{link.title.slice(0, 2).toUpperCase()}</span>}
+        {link.thumbnail && brand && (
+          <span className="link-thumb-badge" title={brand.title}><BrandIcon brand={brand} size={12} className="brand-logo" /></span>
+        )}
       </div>
       <div className="link-content">
         <h3>

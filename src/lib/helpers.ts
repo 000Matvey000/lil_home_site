@@ -7,6 +7,10 @@ export const defaultSettings: SiteSettings = {
   linksTitle: "Useful links",
   photosTitle: "Photos",
   footerText: "Home Hub keeps your household informed.",
+  bannerTitle: "",
+  bannerSubtitle: "",
+  fontFamily: "",
+  photoIntervalSeconds: 3,
   logoUrl: "",
   faviconUrl: "",
   bannerUrl: "",
@@ -15,9 +19,15 @@ export const defaultSettings: SiteSettings = {
   showIntegrations: true,
   showAnnouncements: true,
   showLinks: true,
+  orderHero: 1,
+  orderPhotos: 2,
+  orderIntegrations: 3,
+  orderAnnouncements: 4,
+  orderLinks: 5,
 };
 
 export type HomeSectionKey = "showHero" | "showPhotos" | "showIntegrations" | "showAnnouncements" | "showLinks";
+export type SectionOrderKey = "orderHero" | "orderPhotos" | "orderIntegrations" | "orderAnnouncements" | "orderLinks";
 
 export function readFile(file: File): Promise<FileValue> {
   return new Promise((resolve, reject) => {
@@ -50,12 +60,34 @@ function readSettingBoolean(value: unknown, fallback: boolean) {
   return fallback;
 }
 
-/** Settings are stored as strings server-side; coerce the booleans back. */
+/** Settings are stored as strings server-side; coerce booleans and numbers back. */
 export function normalizeSettings(raw: Partial<Record<keyof SiteSettings, unknown>>): SiteSettings {
   const merged = { ...defaultSettings, ...raw } as SiteSettings;
   const keys: HomeSectionKey[] = ["showHero", "showPhotos", "showIntegrations", "showAnnouncements", "showLinks"];
   for (const key of keys) merged[key] = readSettingBoolean(raw[key], defaultSettings[key]);
+  const interval = Number(raw.photoIntervalSeconds);
+  merged.photoIntervalSeconds = Number.isFinite(interval) && interval >= 1 && interval <= 60 ? interval : defaultSettings.photoIntervalSeconds;
+  for (const { orderKey } of HOME_SECTIONS) {
+    const order = Number(raw[orderKey]);
+    merged[orderKey] = Number.isInteger(order) ? order : defaultSettings[orderKey];
+  }
   return merged;
+}
+
+/** The home page sections. `orderKey` holds each section's position (lower = higher on the page). */
+export const HOME_SECTIONS: Array<{ key: HomeSectionKey; orderKey: SectionOrderKey; label: string }> = [
+  { key: "showHero", orderKey: "orderHero", label: "Banner" },
+  { key: "showPhotos", orderKey: "orderPhotos", label: "Photos" },
+  { key: "showIntegrations", orderKey: "orderIntegrations", label: "Live data" },
+  { key: "showAnnouncements", orderKey: "orderAnnouncements", label: "Announcements" },
+  { key: "showLinks", orderKey: "orderLinks", label: "Links" },
+];
+
+/** Sections sorted by their Order setting; ties keep the default order. */
+export function orderedSections(settings: SiteSettings) {
+  return HOME_SECTIONS
+    .map((section, index) => ({ ...section, index }))
+    .sort((a, b) => settings[a.orderKey] - settings[b.orderKey] || a.index - b.index);
 }
 
 export function toFriendlyErrorMessage(raw: string) {

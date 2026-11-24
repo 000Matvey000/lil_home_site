@@ -40,7 +40,7 @@ export function AdminPage({ tab, currentUser, settings, setSettings, photos, onS
           <CustomizeTab settings={settings} setSettings={setSettings} onSaved={onSettingsChanged} />
         </TabsContent>
         <TabsContent value="photos" forceMount>
-          <PhotosTab photos={photos} onChanged={onPhotosChanged} />
+          <PhotosTab photos={photos} onChanged={onPhotosChanged} settings={settings} setSettings={setSettings} />
         </TabsContent>
         <TabsContent value="users" forceMount>
           <UsersTab currentUser={currentUser} />

@@ -9,11 +9,20 @@ export function seed() {
     linksTitle: "Useful links",
     photosTitle: "Photos",
     footerText: "Home Hub keeps your household informed.",
+    bannerTitle: "",
+    bannerSubtitle: "",
+    fontFamily: "",
+    photoIntervalSeconds: "3",
     showHero: "true",
     showPhotos: "true",
     showIntegrations: "true",
     showAnnouncements: "true",
     showLinks: "true",
+    orderHero: "1",
+    orderPhotos: "2",
+    orderIntegrations: "3",
+    orderAnnouncements: "4",
+    orderLinks: "5",
   };
   const upsert = db.prepare("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
   db.transaction(() => {
@@ -34,16 +43,16 @@ export function seed() {
 
   const linkCount = (db.prepare("SELECT COUNT(*) AS count FROM links").get() as { count: number }).count;
   if (!linkCount) {
-    const insert = db.prepare("INSERT INTO links(title,url,description,department,category,color) VALUES (?,?,?,?,?,?)");
+    const insert = db.prepare("INSERT INTO links(title,url,description,department,category,color,link_type) VALUES (?,?,?,?,?,?,?)");
     const oldLinks = [
-      ["Google", "https://www.google.com", "Search the web.", "IT", "Search", "#4285F4"],
-      ["YouTube", "https://www.youtube.com", "Watch and share videos.", "Media", "Video", "#FF0000"],
-      ["GitHub", "https://github.com", "Host and collaborate on code.", "IT", "Development", "#181717"],
-      ["Figma", "https://www.figma.com", "Collaborate on interface designs.", "Design", "Design", "#F24E1E"],
-      ["Canva", "https://www.canva.com", "Create simple graphics and presentations.", "Design", "Design", "#00C4CC"],
-      ["Salesforce", "https://www.salesforce.com", "Customer relationship management.", "Sales", "CRM", "#00A1E0"],
-      ["HubSpot", "https://www.hubspot.com", "Marketing and sales software.", "Marketing", "Marketing", "#FF7A00"],
-      ["WordPress", "https://wordpress.com", "Create and manage websites.", "Development", "CMS", "#21759B"],
+      ["Google", "https://www.google.com", "Search the web.", "IT", "Search", "#4285F4", "google"],
+      ["YouTube", "https://www.youtube.com", "Watch and share videos.", "Media", "Video", "#FF0000", "youtube"],
+      ["GitHub", "https://github.com", "Host and collaborate on code.", "IT", "Development", "#181717", "github"],
+      ["Figma", "https://www.figma.com", "Collaborate on interface designs.", "Design", "Design", "#F24E1E", "figma"],
+      ["Canva", "https://www.canva.com", "Create simple graphics and presentations.", "Design", "Design", "#00C4CC", ""],
+      ["Salesforce", "https://www.salesforce.com", "Customer relationship management.", "Sales", "CRM", "#00A1E0", ""],
+      ["HubSpot", "https://www.hubspot.com", "Marketing and sales software.", "Marketing", "Marketing", "#FF7A00", "hubspot"],
+      ["WordPress", "https://wordpress.com", "Create and manage websites.", "Development", "CMS", "#21759B", "wordpress"],
     ];
     db.transaction(() => oldLinks.forEach((link) => insert.run(...link)))();
   }

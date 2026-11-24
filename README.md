@@ -4,7 +4,7 @@ Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry 
 
 ## Features
 
-- Searchable link cards grouped by department
+- Searchable link cards grouped by department, each with an optional **link type** that shows the organisation's logo (GitHub, Google, Microsoft, YouTube, Home Assistant, Plex, Proxmox and ~75 more, auto-detected from the URL). Logos come from [Simple Icons](https://simpleicons.org) (CC0); the Microsoft mark is drawn in-app
 - Link and announcement categories with page filters
 - Multi-category tags using comma-separated free text
 - Optional thumbnail images and downloadable attachments
@@ -27,10 +27,12 @@ Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry 
 - Cookie-backed login sessions
 - `user` and `admin` roles
 - Tabbed **Admin** area (`#/admin/...`, so refresh and the back button keep your place): Site customization, Photos, User management, Integrations
-- **Photos** slideshow on the home page: auto-rotates every 3 seconds with a caption at the bottom; pause button, swipe, arrow keys, and dot navigation. Admins add photos by upload (large images are resized to 2048px before upload) or by image URL, then reorder, re-caption, or replace them
+- **Photos** slideshow on the home page with a caption at the bottom; pause button, swipe, arrow keys, and dot navigation. The seconds per photo is set in Admin › Photos › Carousel. Each photo has an **Order** number (lower plays first) that can be typed in or changed with the move arrows. Photos are added by upload (large images are resized to 2048px before upload) or by image URL
 - **User management**: add people, reset passwords, change roles, and delete accounts. Role changes and deletions take effect immediately, and a password reset signs that person out on every device
 - Admin-managed branding uploads for logo, favicon, and homepage banner image (each can be replaced or removed)
-- Home section switches (banner, photos, live data, announcements, links), persisted in site settings
+- Home sections (banner, photos, live data, announcements, links) stack top to bottom; each has an **Order** number and an on/off switch in Admin › Site customization. Admins also get a row of show/hide toggles on top of the banner
+- Banner with optional heading and text drawn on top of the image (or on a gradient when no image is uploaded)
+- Site-wide **font**: pick a popular Google Font from a list or type any Google Fonts family name, with a live preview before saving
 - SQLite BLOB storage for photos, link thumbnails, and attachments; images are served from versioned, long-cached URLs
 - Link thumbnails and attachments can be replaced or removed when editing a link
 

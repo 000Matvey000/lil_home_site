@@ -18,7 +18,13 @@ if (isProduction && (!process.env.JWT_SECRET || process.env.JWT_SECRET === "deve
   throw new Error("JWT_SECRET must be explicitly set in production.");
 }
 
-app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+    crossOriginOpenerPolicy: false,
+    originAgentCluster: false,
+  }),
+);
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "30mb" }));
 app.use(cookieParser());

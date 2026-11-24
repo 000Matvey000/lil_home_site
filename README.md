@@ -239,3 +239,5 @@ Docker artifacts are in [docker/](/C:/Users/codce/repos/lil_home_site/docker/).
 - Compose file: [docker/compose.yaml](/C:/Users/codce/repos/lil_home_site/docker/compose.yaml)
 - Production compose stack with Caddy HTTPS proxy: [docker/compose.prod.yaml](/C:/Users/codce/repos/lil_home_site/docker/compose.prod.yaml)
 - Image build file: [docker/Dockerfile](/C:/Users/codce/repos/lil_home_site/docker/Dockerfile)
+
+For LAN access by IP address on browsers, prefer the Caddy HTTPS stack to avoid browser trust/isolation warnings on plain HTTP.

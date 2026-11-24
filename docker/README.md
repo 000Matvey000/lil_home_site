@@ -128,3 +128,4 @@ docker run --rm -v docker_home_hub_data:/from -v "${PWD}:/to" alpine cp /from/li
   - `docker compose -f docker/compose.prod.yaml logs -f home-hub`
 - If ports are already in use (80/443/3001), stop old stacks or change `PORT`, `CADDY_HTTP_PORT`, `CADDY_HTTPS_PORT` in `docker/.env`.
 - If HTTPS warns as untrusted on LAN, that is expected with `tls internal` until client devices trust Caddy's internal root CA.
+- Browser warnings mentioning `Cross-Origin-Opener-Policy`/`Origin-Agent-Cluster` on `http://<LAN-IP>` are not CORS issues. Use `compose.prod.yaml` for HTTPS on LAN when possible, then hard-refresh the page.

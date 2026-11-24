@@ -10,26 +10,29 @@ Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry 
 - Optional thumbnail images and downloadable attachments
 - Announcements displayed as visual tiles
 - Configurable custom API integration cards (weather/stocks/etc.) with JSON path mapping and conditional emoji output
-- Dedicated **Integration Setup** page with a filterable integration table (name filter + scrollable 5-row viewport), full-width add/edit form, and in-place test preview
+- **Integrations** admin tab with a filterable integration table, full add/edit form with a sticky save bar, and in-place test preview
 - Advanced mapper rules with multiple conditions per field (`AND`/`OR`) and condition-specific emoji output
 - Integration config import/export as JSON for backup and migration between environments
 - Token-safe integration export by default (optional include-tokens checkbox)
-- Per-integration public/private visibility control for endpoint-backed cards
+- Per-integration visibility: **public** cards show to every visitor, **private** cards only to signed-in users (either role)
 - Expandable AI helper section in Integration Setup with a copy-ready markdown template for generating valid import JSON from sample endpoint data
 - Integration mapping supports URL/image rendering and unix timestamp conversion (`unix-seconds`)
 - Live data viewer uses a carousel with a scrollable integration details panel
-- Integration import now uses a safer append/replace dialog flow to avoid accidental wipeouts
-- Friendly top-screen red error toasts for request/runtime failures, including integration test failures
+- Integration import is validated and applied in a single database transaction. "Add to list" skips invalid entries and reports them; "Replace all" only runs when every entry is valid, so a bad file never wipes your existing integrations
+- Unified toast notifications (success, info, and friendly error messages) and confirm-before-delete dialogs
 - Responsive layout styling managed with Tailwind utilities and shadcn UI building blocks
 - Futuristic visual theme with animated glow orbs, patterned background, and glass-style surfaces
 - Customizable site branding including logo and favicon uploads
 - Dark and light themes
 - Cookie-backed login sessions
 - `user` and `admin` roles
-- Admin tools for link editing, announcements, users, integrations, and customizable site text (header, section labels, footer)
-- Admin-managed branding uploads for logo, favicon, and homepage banner image
-- Admin setting toggles to show/hide home sections (banner, live data, announcements, links), persisted in site settings
-- SQLite BLOB storage for thumbnails and attachments
+- Tabbed **Admin** area (`#/admin/...`, so refresh and the back button keep your place): Site customization, Photos, User management, Integrations
+- **Photos** slideshow on the home page: auto-rotates every 3 seconds with a caption at the bottom; pause button, swipe, arrow keys, and dot navigation. Admins add photos by upload (large images are resized to 2048px before upload) or by image URL, then reorder, re-caption, or replace them
+- **User management**: add people, reset passwords, change roles, and delete accounts. Role changes and deletions take effect immediately, and a password reset signs that person out on every device
+- Admin-managed branding uploads for logo, favicon, and homepage banner image (each can be replaced or removed)
+- Home section switches (banner, photos, live data, announcements, links), persisted in site settings
+- SQLite BLOB storage for photos, link thumbnails, and attachments; images are served from versioned, long-cached URLs
+- Link thumbnails and attachments can be replaced or removed when editing a link
 
 ## Local development
 
@@ -47,7 +50,7 @@ On first start, SQLite is created at `data/lil_home_site.sqlite`. The seed creat
 - Username: `admin`
 - Password: `change-me-now`
 
-Change this password by creating a new admin or updating the seed environment and database. The seed only runs for an empty database.
+Change this password after signing in under **Admin › User management** (key icon next to the account). The seed only runs for an empty database.
 For production, never keep the default password.
 
 For a custom initial admin:

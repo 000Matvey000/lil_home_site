@@ -6,7 +6,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import path from "node:path";
 import fs from "node:fs";
-import { db } from "./db";
+import { contentHash, db } from "./db";
 import "./seed";
 
 const app = express();
@@ -56,6 +56,12 @@ type IntegrationMapping = {
 };
 
 const integrationCache = new Map<number, { expiresAt: number; value: unknown }>();
+const INTEGRATION_TIMEOUT_MS = 10_000;
+const ASSET_KEYS = ["logo", "favicon", "banner"];
+const PHOTO_CAPTION_MAX = 140; // keep in sync with src/pages/admin/PhotosTab.tsx
+// Uploaded images are served from our own origin; a strict CSP keeps an
+// uploaded SVG from running script if someone opens it directly.
+const IMAGE_RESPONSE_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 
 function toSqliteBool(value: unknown) {
   if (value === true || value === 1 || value === "1" || value === "true") return 1;
@@ -71,18 +77,14 @@ function toBooleanSettingValue(value: unknown): "true" | "false" | null {
   return null;
 }
 
-function decodeBlob(row: any, prefix: "thumbnail" | "attachment") {
-  if (!row[`${prefix}_data`]) return null;
-  return {
-    name: row[`${prefix}_name`],
-    type: row[`${prefix}_type`],
-    base64: Buffer.from(row[`${prefix}_data`]).toString("base64"),
-  };
-}
+// Never select the BLOB columns for listings: thumbnails are served from their
+// own cacheable URL instead of being base64-inlined into every /api/links call.
+const linkColumns = `id, title, url, description, department, category, color,
+  thumbnail_name, thumbnail_type, thumbnail_hash, thumbnail_data IS NOT NULL AS has_thumbnail,
+  attachment_name, attachment_type, attachment_data IS NOT NULL AS has_attachment`;
+const selectLink = (id: unknown) => db.prepare(`SELECT ${linkColumns} FROM links WHERE id=?`).get(id);
 
 function mapLink(row: any) {
-  const thumbnail = decodeBlob(row, "thumbnail");
-  const attachment = decodeBlob(row, "attachment");
   return {
     id: row.id,
     title: row.title,
@@ -91,8 +93,41 @@ function mapLink(row: any) {
     department: row.department,
     category: row.category,
     color: row.color,
-    thumbnail: thumbnail ? { name: thumbnail.name, type: thumbnail.type, dataUrl: `data:${thumbnail.type};base64,${thumbnail.base64}` } : null,
-    attachment: attachment ? { name: attachment.name, type: attachment.type } : null,
+    thumbnail: row.has_thumbnail
+      ? { name: row.thumbnail_name, type: row.thumbnail_type, url: `/api/links/${row.id}/thumbnail?v=${row.thumbnail_hash}` }
+      : null,
+    attachment: row.has_attachment ? { name: row.attachment_name, type: row.attachment_type } : null,
+  };
+}
+
+/**
+ * Serve an image stored in SQLite. URLs handed to the client carry
+ * ?v=<content hash>, so a versioned request can be cached for a year; an
+ * unversioned one must revalidate. The CSP keeps an uploaded SVG from running
+ * script if someone opens it directly.
+ */
+function sendStoredImage(req: express.Request, res: express.Response, file: { name: string | null; type: string; data: Buffer }) {
+  res.setHeader("Content-Type", file.type);
+  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(file.name || "image")}"`);
+  res.setHeader("Content-Security-Policy", IMAGE_RESPONSE_CSP);
+  res.setHeader("Cache-Control", req.query.v ? "public, max-age=31536000, immutable" : "no-cache");
+  res.send(file.data);
+}
+
+type UploadedFile = { name: string; type: string; data: Buffer; hash: string };
+
+/** Decode an optional `{ name, base64 }` upload; throws on malformed input. */
+function parseUpload(value: unknown, { imageOnly = false, label = "File" } = {}): UploadedFile | null {
+  const file = value as { name?: unknown; base64?: unknown } | null | undefined;
+  if (!file || typeof file.base64 !== "string" || !file.base64) return null;
+  const decoded = blobFromBase64(file.base64);
+  if (!decoded) return null;
+  if (imageOnly && !decoded.type.startsWith("image/")) throw new Error(`${label} must be an image`);
+  return {
+    name: typeof file.name === "string" && file.name ? file.name : "file",
+    type: decoded.type,
+    data: decoded.data,
+    hash: contentHash(decoded.data),
   };
 }
 
@@ -119,25 +154,39 @@ function mapIntegration(row: any) {
   };
 }
 
-function auth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const token = req.cookies?.token;
-  if (!token) return res.status(401).json({ error: "Authentication required" });
-  try {
-    (req as express.Request & { user: AuthUser }).user = jwt.verify(token, jwtSecret) as AuthUser;
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid or expired session" });
-  }
+const SESSION_DAYS = 7;
+
+/** Set the session cookie. `tv` ties the token to the user's token_version. */
+function issueSession(res: express.Response, user: AuthUser & { token_version: number }) {
+  const payload = { id: user.id, username: user.username, role: user.role, tv: user.token_version };
+  const token = jwt.sign(payload, jwtSecret, { expiresIn: `${SESSION_DAYS}d` });
+  res.cookie("token", token, { httpOnly: true, sameSite: "strict", secure: secureCookies, maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000 });
 }
 
+// Resolve the session against the database on every request, instead of
+// trusting a 7-day JWT: deleted users lose access, role changes apply at
+// once, and a password reset (which bumps token_version) signs out every
+// session issued before it. Tokens from before token_version existed count
+// as version 0, so upgrading doesn't log anyone out.
 function getOptionalUser(req: express.Request): AuthUser | null {
   const token = req.cookies?.token;
   if (!token) return null;
   try {
-    return jwt.verify(token, jwtSecret) as AuthUser;
+    const claims = jwt.verify(token, jwtSecret) as AuthUser & { tv?: number };
+    const row = db.prepare("SELECT id, username, role, token_version FROM users WHERE id=?").get(claims.id) as (AuthUser & { token_version: number }) | undefined;
+    if (!row || (claims.tv ?? 0) !== row.token_version) return null;
+    return { id: row.id, username: row.username, role: row.role };
   } catch {
     return null;
   }
+}
+
+function auth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!req.cookies?.token) return res.status(401).json({ error: "Authentication required" });
+  const user = getOptionalUser(req);
+  if (!user) return res.status(401).json({ error: "Invalid or expired session" });
+  (req as express.Request & { user: AuthUser }).user = user;
+  next();
 }
 
 function admin(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -259,9 +308,24 @@ async function fetchIntegrationData(integration: ReturnType<typeof mapIntegratio
     else headers[integration.authHeader || "Authorization"] = integration.authToken;
   }
 
-  const response = await fetch(integration.endpointUrl, { headers });
-  if (!response.ok) throw new Error(`Endpoint ${integration.title} failed with ${response.status}`);
-  const json = await response.json();
+  // The timeout signal also covers reading the body, so the whole
+  // fetch-and-parse sits inside one try to get a consistent error message.
+  let json: unknown;
+  try {
+    const response = await fetch(integration.endpointUrl, { headers, signal: AbortSignal.timeout(INTEGRATION_TIMEOUT_MS) });
+    if (!response.ok) throw new Error(`Endpoint ${integration.title} failed with ${response.status}`);
+    const body = await response.text();
+    try {
+      json = JSON.parse(body);
+    } catch {
+      throw new Error(`Endpoint ${integration.title} did not return JSON`);
+    }
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new Error(`Endpoint ${integration.title} timed out after ${INTEGRATION_TIMEOUT_MS / 1000}s`);
+    }
+    throw error;
+  }
   const scoped = getByPath(json, integration.responsePath) ?? json;
 
   const fields = integration.mappings.map((mapping) => {
@@ -279,6 +343,7 @@ async function fetchIntegrationData(integration: ReturnType<typeof mapIntegratio
     id: integration.id,
     title: integration.title,
     icon: integration.icon,
+    isPublic: integration.isPublic,
     fields,
     fetchedAt: new Date().toISOString(),
   };
@@ -289,25 +354,22 @@ async function fetchIntegrationData(integration: ReturnType<typeof mapIntegratio
 }
 
 function getAssetMeta() {
-  const assets = db.prepare("SELECT key, updated_at AS updatedAt FROM site_assets").all() as Array<{ key: string; updatedAt: string }>;
-  const indexed = new Map(assets.map((asset) => [asset.key, asset.updatedAt]));
-  return {
-    logoUrl: indexed.has("logo") ? `/api/assets/logo?v=${encodeURIComponent(indexed.get("logo") as string)}` : "",
-    faviconUrl: indexed.has("favicon") ? `/api/assets/favicon?v=${encodeURIComponent(indexed.get("favicon") as string)}` : "",
-    bannerUrl: indexed.has("banner") ? `/api/assets/banner?v=${encodeURIComponent(indexed.get("banner") as string)}` : "",
-  };
+  const assets = db.prepare("SELECT key, file_hash FROM site_assets").all() as Array<{ key: string; file_hash: string }>;
+  const versions = new Map(assets.map((asset) => [asset.key, asset.file_hash]));
+  const url = (key: string) => (versions.has(key) ? `/api/assets/${key}?v=${versions.get(key)}` : "");
+  return { logoUrl: url("logo"), faviconUrl: url("favicon"), bannerUrl: url("banner") };
 }
 
 app.post("/api/auth/login", (req, res) => {
-  const { username, password } = req.body as { username?: string; password?: string };
-  const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as any;
-  if (!user || !bcrypt.compareSync(password || "", user.password_hash)) {
+  const { username, password } = (req.body ?? {}) as { username?: unknown; password?: unknown };
+  const user = typeof username === "string"
+    ? db.prepare("SELECT id, username, role, password_hash, token_version FROM users WHERE username = ?").get(username) as any
+    : undefined;
+  if (!user || !bcrypt.compareSync(typeof password === "string" ? password : "", user.password_hash)) {
     return res.status(401).json({ error: "Incorrect username or password" });
   }
-  const payload: AuthUser = { id: user.id, username: user.username, role: user.role };
-  const token = jwt.sign(payload, jwtSecret, { expiresIn: "7d" });
-  res.cookie("token", token, { httpOnly: true, sameSite: "strict", secure: secureCookies, maxAge: 7 * 24 * 60 * 60 * 1000 });
-  res.json({ user: payload });
+  issueSession(res, user);
+  res.json({ user: { id: user.id, username: user.username, role: user.role } });
 });
 
 app.post("/api/auth/logout", (_req, res) => {
@@ -315,8 +377,10 @@ app.post("/api/auth/logout", (_req, res) => {
   res.status(204).end();
 });
 
-app.get("/api/auth/me", auth, (req, res) => {
-  res.json({ user: (req as express.Request & { user: AuthUser }).user });
+// Being signed out is a normal state, not an error: answer 200 with user: null
+// so every anonymous visit doesn't log a failed request in the console.
+app.get("/api/auth/me", (req, res) => {
+  res.json({ user: getOptionalUser(req) });
 });
 
 app.get("/api/settings", (_req, res) => {
@@ -326,8 +390,8 @@ app.get("/api/settings", (_req, res) => {
 
 app.put("/api/settings", auth, admin, (req, res) => {
   const upsert = db.prepare("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-  const editableTextKeys = ["siteName", "headerSubtitle", "announcementsTitle", "linksTitle", "footerText"];
-  const editableBooleanKeys = ["showHero", "showIntegrations", "showAnnouncements", "showLinks"];
+  const editableTextKeys = ["siteName", "headerSubtitle", "announcementsTitle", "linksTitle", "photosTitle", "footerText"];
+  const editableBooleanKeys = ["showHero", "showPhotos", "showIntegrations", "showAnnouncements", "showLinks"];
   db.transaction(() => {
     for (const key of editableTextKeys) {
       if (typeof req.body[key] === "string") upsert.run(key, req.body[key].trim());
@@ -343,16 +407,14 @@ app.put("/api/settings", auth, admin, (req, res) => {
 
 app.put("/api/assets/:key", auth, admin, (req, res) => {
   const key = String(req.params.key ?? "");
-  if (!["logo", "favicon", "banner"].includes(key)) return res.status(400).json({ error: "Unsupported asset key" });
-  const { name, base64 } = req.body as { name?: string; base64?: string };
-  if (!name || !base64) return res.status(400).json({ error: "Asset name and base64 are required" });
+  if (!ASSET_KEYS.includes(key)) return res.status(400).json({ error: "Unsupported asset key" });
   try {
-    const decoded = blobFromBase64(base64);
-    if (!decoded) return res.status(400).json({ error: "Invalid base64 payload" });
-    db.prepare(`INSERT INTO site_assets(key,file_name,mime_type,file_data,updated_at)
-      VALUES (?,?,?,?,CURRENT_TIMESTAMP)
-      ON CONFLICT(key) DO UPDATE SET file_name=excluded.file_name,mime_type=excluded.mime_type,file_data=excluded.file_data,updated_at=CURRENT_TIMESTAMP`)
-      .run(key, name, decoded.type, decoded.data);
+    const upload = parseUpload(req.body, { imageOnly: true, label: "Branding file" });
+    if (!upload) return res.status(400).json({ error: "Choose an image to upload" });
+    db.prepare(`INSERT INTO site_assets(key,file_name,mime_type,file_data,file_hash,updated_at)
+      VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET file_name=excluded.file_name,mime_type=excluded.mime_type,file_data=excluded.file_data,file_hash=excluded.file_hash,updated_at=CURRENT_TIMESTAMP`)
+      .run(key, upload.name, upload.type, upload.data, upload.hash);
     res.status(204).end();
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Invalid asset" });
@@ -363,9 +425,126 @@ app.get("/api/assets/:key", (req, res) => {
   const key = req.params.key;
   const asset = db.prepare("SELECT file_name, mime_type, file_data FROM site_assets WHERE key=?").get(key) as any;
   if (!asset) return res.status(404).json({ error: "Asset not found" });
-  res.setHeader("Content-Type", asset.mime_type);
-  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(asset.file_name)}"`);
-  res.send(asset.file_data);
+  sendStoredImage(req, res, { name: asset.file_name, type: asset.mime_type, data: asset.file_data });
+});
+
+app.delete("/api/assets/:key", auth, admin, (req, res) => {
+  const key = String(req.params.key ?? "");
+  if (!ASSET_KEYS.includes(key)) return res.status(400).json({ error: "Unsupported asset key" });
+  db.prepare("DELETE FROM site_assets WHERE key=?").run(key);
+  res.status(204).end();
+});
+
+function mapPhoto(row: any) {
+  const uploaded = Boolean(row.has_image);
+  return {
+    id: row.id,
+    caption: row.caption,
+    sortOrder: row.sort_order,
+    source: uploaded ? "upload" : "url",
+    sourceUrl: row.source_url || "",
+    imageUrl: uploaded ? `/api/photos/${row.id}/image?v=${row.image_hash}` : row.source_url,
+  };
+}
+
+const photoColumns = "id, caption, source_url, sort_order, image_hash, image_data IS NOT NULL AS has_image";
+const selectPhoto = (id: unknown) => db.prepare(`SELECT ${photoColumns} FROM photos WHERE id=?`).get(id);
+const listPhotos = () => db.prepare(`SELECT ${photoColumns} FROM photos ORDER BY sort_order, id`).all().map(mapPhoto);
+
+type PhotoInput = {
+  caption: string;
+  image: { kind: "url"; url: string } | ({ kind: "upload" } & UploadedFile) | null;
+};
+
+function parsePhotoInput(body: any): PhotoInput {
+  const caption = typeof body?.caption === "string" ? body.caption.trim() : "";
+  if (caption.length > PHOTO_CAPTION_MAX) throw new Error(`Caption must be ${PHOTO_CAPTION_MAX} characters or fewer`);
+  const rawUrl = typeof body?.url === "string" ? body.url.trim() : "";
+  const file = body?.file as { name?: string; base64?: string } | undefined;
+  if (rawUrl && file?.base64) throw new Error("Provide either an image URL or an uploaded file, not both");
+  if (rawUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new Error("Image URL is not valid");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("Image URL must start with http:// or https://");
+    return { caption, image: { kind: "url", url: parsed.toString() } };
+  }
+  const upload = parseUpload(file, { imageOnly: true, label: "Uploaded file" });
+  if (upload) return { caption, image: { kind: "upload", ...upload } };
+  return { caption, image: null };
+}
+
+app.get("/api/photos", (_req, res) => {
+  res.json(listPhotos());
+});
+
+app.post("/api/photos", auth, admin, (req, res) => {
+  let input: PhotoInput;
+  try {
+    input = parsePhotoInput(req.body);
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid photo" });
+  }
+  if (!input.image) return res.status(400).json({ error: "Add an image file or an image URL" });
+  const nextOrder = (db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM photos").get() as { next: number }).next;
+  const image = input.image;
+  const result = image.kind === "url"
+    ? db.prepare("INSERT INTO photos(caption, source_url, sort_order) VALUES (?,?,?)").run(input.caption, image.url, nextOrder)
+    : db.prepare("INSERT INTO photos(caption, image_name, image_type, image_data, image_hash, sort_order) VALUES (?,?,?,?,?,?)")
+        .run(input.caption, image.name, image.type, image.data, image.hash, nextOrder);
+  res.status(201).json(mapPhoto(selectPhoto(result.lastInsertRowid)));
+});
+
+// Must be registered before /api/photos/:id so "order" is not treated as an id.
+// The client may send a stale list (another admin added a photo meanwhile), so
+// every photo gets a unique position: the listed ids first, in the given
+// order, then any unlisted photos in their current order.
+app.put("/api/photos/order", auth, admin, (req, res) => {
+  const ids = (req.body as { ids?: unknown })?.ids;
+  if (!Array.isArray(ids) || !ids.every((id) => Number.isInteger(id))) return res.status(400).json({ error: "ids must be an array of photo ids" });
+  const current = (db.prepare("SELECT id FROM photos ORDER BY sort_order, id").all() as Array<{ id: number }>).map((row) => row.id);
+  const known = new Set(current);
+  const listed = Array.from(new Set(ids as number[])).filter((id) => known.has(id));
+  const listedSet = new Set(listed);
+  const finalOrder = [...listed, ...current.filter((id) => !listedSet.has(id))];
+  const update = db.prepare("UPDATE photos SET sort_order=? WHERE id=?");
+  db.transaction(() => finalOrder.forEach((id, index) => update.run(index, id)))();
+  res.json(listPhotos());
+});
+
+app.put("/api/photos/:id", auth, admin, (req, res) => {
+  if (!selectPhoto(req.params.id)) return res.status(404).json({ error: "Photo not found" });
+  let input: PhotoInput;
+  try {
+    input = parsePhotoInput(req.body);
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid photo" });
+  }
+  const image = input.image;
+  if (!image) {
+    db.prepare("UPDATE photos SET caption=?, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(input.caption, req.params.id);
+  } else if (image.kind === "url") {
+    db.prepare("UPDATE photos SET caption=?, source_url=?, image_name=NULL, image_type=NULL, image_data=NULL, image_hash=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .run(input.caption, image.url, req.params.id);
+  } else {
+    db.prepare("UPDATE photos SET caption=?, source_url=NULL, image_name=?, image_type=?, image_data=?, image_hash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .run(input.caption, image.name, image.type, image.data, image.hash, req.params.id);
+  }
+  res.json(mapPhoto(selectPhoto(req.params.id)));
+});
+
+app.delete("/api/photos/:id", auth, admin, (req, res) => {
+  db.prepare("DELETE FROM photos WHERE id=?").run(req.params.id);
+  res.status(204).end();
+});
+
+app.get("/api/photos/:id/image", (req, res) => {
+  const row = db.prepare("SELECT image_name, image_type, image_data FROM photos WHERE id=?").get(req.params.id) as any;
+  if (!row?.image_data) return res.status(404).json({ error: "Photo not found" });
+  sendStoredImage(req, res, { name: row.image_name, type: row.image_type, data: row.image_data });
 });
 
 app.get("/api/announcements", (_req, res) => {
@@ -392,40 +571,74 @@ app.delete("/api/announcements/:id", auth, admin, (req, res) => {
   res.status(204).end();
 });
 
+/** Text fields shared by link create/update. */
+function parseLinkFields(body: any) {
+  const text = (value: unknown, fallback = "") => (typeof value === "string" ? value.trim() : fallback);
+  return {
+    title: text(body?.title),
+    url: text(body?.url),
+    description: text(body?.description),
+    department: text(body?.department) || "General",
+    category: text(body?.category),
+    color: text(body?.color) || "#4f46e5",
+  };
+}
+
 app.get("/api/links", (_req, res) => {
-  res.json(db.prepare("SELECT * FROM links ORDER BY department, title").all().map(mapLink));
+  res.json(db.prepare(`SELECT ${linkColumns} FROM links ORDER BY department, title`).all().map(mapLink));
 });
 
 app.post("/api/links", auth, admin, (req, res) => {
-  const { title, url = "", description = "", department = "General", category = "", color = "#4f46e5", thumbnail, attachment } = req.body;
-  if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
+  const fields = parseLinkFields(req.body);
+  if (!fields.title) return res.status(400).json({ error: "Title is required" });
   try {
-    const thumb = thumbnail?.base64 ? blobFromBase64(thumbnail.base64) : null;
-    const attach = attachment?.base64 ? blobFromBase64(attachment.base64) : null;
-    const result = db.prepare(`INSERT INTO links(title,url,description,department,category,color,thumbnail_name,thumbnail_type,thumbnail_data,attachment_name,attachment_type,attachment_data)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(title.trim(), url.trim(), description.trim(), department.trim(), String(category).trim(), color, thumbnail?.name || null, thumb?.type || null, thumb?.data || null, attachment?.name || null, attach?.type || null, attach?.data || null);
-    res.status(201).json(mapLink(db.prepare("SELECT * FROM links WHERE id=?").get(result.lastInsertRowid)));
+    const thumb = parseUpload(req.body?.thumbnail, { imageOnly: true, label: "Thumbnail" });
+    const attach = parseUpload(req.body?.attachment);
+    const result = db.prepare(`INSERT INTO links(title,url,description,department,category,color,thumbnail_name,thumbnail_type,thumbnail_data,thumbnail_hash,attachment_name,attachment_type,attachment_data)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      fields.title, fields.url, fields.description, fields.department, fields.category, fields.color,
+      thumb?.name ?? null, thumb?.type ?? null, thumb?.data ?? null, thumb?.hash ?? null,
+      attach?.name ?? null, attach?.type ?? null, attach?.data ?? null);
+    res.status(201).json(mapLink(selectLink(result.lastInsertRowid)));
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Could not save link" });
   }
 });
 
+/**
+ * Files are optional on update: a new upload replaces the stored file,
+ * `removeThumbnail` / `removeAttachment: true` clears it, and omitting both
+ * leaves it untouched.
+ */
 app.put("/api/links/:id", auth, admin, (req, res) => {
-  const existing = db.prepare("SELECT * FROM links WHERE id=?").get(req.params.id) as any;
-  if (!existing) return res.status(404).json({ error: "Link not found" });
-  const { title, url = "", description = "", department = "General", category = "", color = "#4f46e5", thumbnail, attachment } = req.body;
-  if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
+  if (!db.prepare("SELECT id FROM links WHERE id=?").get(req.params.id)) return res.status(404).json({ error: "Link not found" });
+  const fields = parseLinkFields(req.body);
+  if (!fields.title) return res.status(400).json({ error: "Title is required" });
   try {
-    const thumb = thumbnail?.base64 ? blobFromBase64(thumbnail.base64) : null;
-    const attach = attachment?.base64 ? blobFromBase64(attachment.base64) : null;
-    db.prepare(`UPDATE links SET title=?,url=?,description=?,department=?,category=?,color=?,
-      thumbnail_name=COALESCE(?,thumbnail_name),thumbnail_type=COALESCE(?,thumbnail_type),thumbnail_data=COALESCE(?,thumbnail_data),
-      attachment_name=COALESCE(?,attachment_name),attachment_type=COALESCE(?,attachment_type),attachment_data=COALESCE(?,attachment_data),
-      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-      title.trim(), url.trim(), description.trim(), department.trim(), String(category).trim(), color,
-      thumb ? thumbnail.name : null, thumb?.type || null, thumb?.data || null,
-      attach ? attachment.name : null, attach?.type || null, attach?.data || null, req.params.id);
-    res.json(mapLink(db.prepare("SELECT * FROM links WHERE id=?").get(req.params.id)));
+    const sets = ["title=?", "url=?", "description=?", "department=?", "category=?", "color=?"];
+    const params: unknown[] = [fields.title, fields.url, fields.description, fields.department, fields.category, fields.color];
+    // Thumbnails are images served from a cached, hash-versioned URL;
+    // attachments are downloads and don't need a hash.
+    const files = [
+      { column: "thumbnail", hashed: true, upload: parseUpload(req.body?.thumbnail, { imageOnly: true, label: "Thumbnail" }), remove: req.body?.removeThumbnail === true },
+      { column: "attachment", hashed: false, upload: parseUpload(req.body?.attachment), remove: req.body?.removeAttachment === true },
+    ];
+    for (const { column, hashed, upload, remove } of files) {
+      if (upload) {
+        sets.push(`${column}_name=?`, `${column}_type=?`, `${column}_data=?`);
+        params.push(upload.name, upload.type, upload.data);
+        if (hashed) {
+          sets.push(`${column}_hash=?`);
+          params.push(upload.hash);
+        }
+      } else if (remove) {
+        sets.push(`${column}_name=NULL`, `${column}_type=NULL`, `${column}_data=NULL`);
+        if (hashed) sets.push(`${column}_hash=NULL`);
+      }
+    }
+    sets.push("updated_at=CURRENT_TIMESTAMP");
+    db.prepare(`UPDATE links SET ${sets.join(", ")} WHERE id=?`).run(...params, req.params.id);
+    res.json(mapLink(selectLink(req.params.id)));
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Could not update link" });
   }
@@ -444,78 +657,112 @@ app.get("/api/links/:id/attachment", (req, res) => {
   res.send(row.attachment_data);
 });
 
+app.get("/api/links/:id/thumbnail", (req, res) => {
+  const row = db.prepare("SELECT thumbnail_name, thumbnail_type, thumbnail_data FROM links WHERE id=?").get(req.params.id) as any;
+  if (!row?.thumbnail_data) return res.status(404).json({ error: "Thumbnail not found" });
+  sendStoredImage(req, res, { name: row.thumbnail_name, type: row.thumbnail_type, data: row.thumbnail_data });
+});
+
 app.get("/api/integrations", auth, admin, (_req, res) => {
   const rows = db.prepare("SELECT * FROM integrations ORDER BY id DESC").all();
   res.json(rows.map(mapIntegration));
 });
 
-app.post("/api/integrations", auth, admin, (req, res) => {
-  const {
-    title,
-    icon = "🧩",
-    endpointUrl,
-    authHeader = "Authorization",
-    authToken = "",
-    authScheme = "Bearer",
-    isPublic = false,
-    responsePath = "",
-    refreshMinutes = 10,
-    mappings = [],
-  } = req.body as {
-    title?: string;
-    icon?: string;
-    endpointUrl?: string;
-    authHeader?: string;
-    authToken?: string;
-    authScheme?: string;
-    isPublic?: boolean;
-    responsePath?: string;
-    refreshMinutes?: number;
-    mappings?: IntegrationMapping[];
-  };
+type IntegrationInput = {
+  title: string;
+  icon: string;
+  endpointUrl: string;
+  authHeader: string;
+  authToken: string;
+  authScheme: string;
+  isPublic: 0 | 1;
+  responsePath: string;
+  refreshMinutes: number;
+  mappings: IntegrationMapping[];
+};
 
-  if (!title?.trim() || !endpointUrl?.trim()) return res.status(400).json({ error: "Title and endpoint URL are required" });
-  if (!Array.isArray(mappings)) return res.status(400).json({ error: "Mappings must be an array" });
-  const result = db.prepare(`INSERT INTO integrations(title, icon, endpoint_url, auth_header, auth_token, auth_scheme, is_public, response_path, mappings_json, refresh_minutes)
+/** Validate and normalize one integration; returns an error message on failure. */
+function parseIntegrationInput(raw: any): IntegrationInput | string {
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  const title = text(raw?.title);
+  const endpointUrl = text(raw?.endpointUrl);
+  if (!title || !endpointUrl) return "Title and endpoint URL are required";
+  try {
+    const { protocol } = new URL(endpointUrl);
+    if (protocol !== "http:" && protocol !== "https:") return "Endpoint URL must start with http:// or https://";
+  } catch {
+    return `Endpoint URL for "${title}" is not a valid URL`;
+  }
+  const mappings = raw?.mappings ?? [];
+  if (!Array.isArray(mappings)) return "Mappings must be an array";
+  return {
+    title,
+    endpointUrl,
+    icon: text(raw?.icon) || "🧩",
+    authHeader: text(raw?.authHeader) || "Authorization",
+    authToken: raw?.authToken == null ? "" : String(raw.authToken),
+    authScheme: text(raw?.authScheme) || "Bearer",
+    isPublic: toSqliteBool(raw?.isPublic),
+    responsePath: text(raw?.responsePath),
+    refreshMinutes: Math.max(1, Number(raw?.refreshMinutes) || 10),
+    mappings,
+  };
+}
+
+function insertIntegration(input: IntegrationInput) {
+  return db.prepare(`INSERT INTO integrations(title, icon, endpoint_url, auth_header, auth_token, auth_scheme, is_public, response_path, mappings_json, refresh_minutes)
     VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .run(title.trim(), icon.trim() || "🧩", endpointUrl.trim(), authHeader.trim() || "Authorization", String(authToken), authScheme, toSqliteBool(isPublic), responsePath.trim(), JSON.stringify(mappings), Math.max(1, Number(refreshMinutes) || 10));
-  const row = db.prepare("SELECT * FROM integrations WHERE id=?").get(result.lastInsertRowid);
-  res.status(201).json(mapIntegration(row));
+    .run(input.title, input.icon, input.endpointUrl, input.authHeader, input.authToken, input.authScheme, input.isPublic, input.responsePath, JSON.stringify(input.mappings), input.refreshMinutes);
+}
+
+app.post("/api/integrations", auth, admin, (req, res) => {
+  const input = parseIntegrationInput(req.body);
+  if (typeof input === "string") return res.status(400).json({ error: input });
+  const result = insertIntegration(input);
+  res.status(201).json(mapIntegration(db.prepare("SELECT * FROM integrations WHERE id=?").get(result.lastInsertRowid)));
+});
+
+/**
+ * Import many integrations at once. Every row is validated first, then the
+ * optional "replace" delete and all inserts run in one SQLite transaction, so
+ * a failure part-way through rolls back and nothing is lost.
+ *
+ * "append" skips invalid rows and reports them. "replace" is all-or-nothing:
+ * any invalid row rejects the whole import, because replacing your working
+ * integrations with a partial set is data loss.
+ */
+app.post("/api/integrations/import", auth, admin, (req, res) => {
+  const { mode, integrations } = (req.body ?? {}) as { mode?: unknown; integrations?: unknown };
+  if (mode !== "append" && mode !== "replace") return res.status(400).json({ error: "mode must be append or replace" });
+  if (!Array.isArray(integrations)) return res.status(400).json({ error: "integrations must be an array" });
+  const parsed = integrations.map(parseIntegrationInput);
+  const valid = parsed.filter((row): row is IntegrationInput => typeof row !== "string");
+  const problems = parsed.filter((row): row is string => typeof row === "string");
+  const summary = Array.from(new Set(problems)).slice(0, 3).join("; ");
+  if (!valid.length) {
+    return res.status(400).json({ error: `No valid integrations found in the file. ${summary}`.trim() });
+  }
+  if (mode === "replace" && problems.length) {
+    return res.status(400).json({
+      error: `Nothing was replaced: ${problems.length} of ${parsed.length} entries are invalid (${summary}). Fix the file, or use "Add to list" to import only the valid ones.`,
+    });
+  }
+  db.transaction(() => {
+    if (mode === "replace") db.prepare("DELETE FROM integrations").run();
+    for (const row of valid) insertIntegration(row);
+  })();
+  if (mode === "replace") integrationCache.clear();
+  res.json({ imported: valid.length, skipped: problems.length, problems: Array.from(new Set(problems)).slice(0, 5) });
 });
 
 app.put("/api/integrations/:id", auth, admin, (req, res) => {
-  const existing = db.prepare("SELECT * FROM integrations WHERE id=?").get(req.params.id);
-  if (!existing) return res.status(404).json({ error: "Integration not found" });
-  const {
-    title,
-    icon = "🧩",
-    endpointUrl,
-    authHeader = "Authorization",
-    authToken = "",
-    authScheme = "Bearer",
-    isPublic = false,
-    responsePath = "",
-    refreshMinutes = 10,
-    mappings = [],
-  } = req.body as {
-    title?: string;
-    icon?: string;
-    endpointUrl?: string;
-    authHeader?: string;
-    authToken?: string;
-    authScheme?: string;
-    isPublic?: boolean;
-    responsePath?: string;
-    refreshMinutes?: number;
-    mappings?: IntegrationMapping[];
-  };
-  if (!title?.trim() || !endpointUrl?.trim()) return res.status(400).json({ error: "Title and endpoint URL are required" });
-  if (!Array.isArray(mappings)) return res.status(400).json({ error: "Mappings must be an array" });
+  if (!db.prepare("SELECT id FROM integrations WHERE id=?").get(req.params.id)) return res.status(404).json({ error: "Integration not found" });
+  const input = parseIntegrationInput(req.body);
+  if (typeof input === "string") return res.status(400).json({ error: input });
   db.prepare(`UPDATE integrations SET title=?, icon=?, endpoint_url=?, auth_header=?, auth_token=?, auth_scheme=?, is_public=?, response_path=?, mappings_json=?, refresh_minutes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-    .run(title.trim(), icon.trim() || "🧩", endpointUrl.trim(), authHeader.trim() || "Authorization", String(authToken), authScheme, toSqliteBool(isPublic), responsePath.trim(), JSON.stringify(mappings), Math.max(1, Number(refreshMinutes) || 10), req.params.id);
+    .run(input.title, input.icon, input.endpointUrl, input.authHeader, input.authToken, input.authScheme, input.isPublic, input.responsePath, JSON.stringify(input.mappings), input.refreshMinutes, req.params.id);
   integrationCache.delete(Number(req.params.id));
-  const row = db.prepare("SELECT * FROM integrations WHERE id=?").get(req.params.id);
-  res.json(mapIntegration(row));
+  res.json(mapIntegration(db.prepare("SELECT * FROM integrations WHERE id=?").get(req.params.id)));
 });
 
 app.post("/api/integrations/test", auth, admin, async (req, res) => {
@@ -571,26 +818,12 @@ app.delete("/api/integrations/:id", auth, admin, (req, res) => {
   res.status(204).end();
 });
 
-app.get("/api/integrations/public", (_req, res) => {
-  const rows = db.prepare("SELECT id, title, icon, endpoint_url, response_path, mappings_json, refresh_minutes FROM integrations WHERE is_public=1 ORDER BY id DESC").all() as any[];
-  res.json(rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    icon: row.icon,
-    endpointUrl: row.endpoint_url,
-    responsePath: row.response_path,
-    refreshMinutes: row.refresh_minutes,
-    mappings: JSON.parse(row.mappings_json || "[]"),
-  })));
-});
-
 app.get("/api/integrations/:id/data", async (req, res) => {
   const row = db.prepare("SELECT * FROM integrations WHERE id=?").get(req.params.id);
   if (!row) return res.status(404).json({ error: "Integration not found" });
   const integration = mapIntegration(row);
-  const currentUser = getOptionalUser(req);
-  if (!integration.isPublic && currentUser?.role !== "admin") {
-    return res.status(403).json({ error: "Integration data is private" });
+  if (!integration.isPublic && !getOptionalUser(req)) {
+    return res.status(403).json({ error: "Sign in to see this integration" });
   }
   try {
     const payload = await fetchIntegrationData(integration);
@@ -600,14 +833,17 @@ app.get("/api/integrations/:id/data", async (req, res) => {
   }
 });
 
-app.get("/api/integrations/data/all", async (_req, res) => {
-  const rows = db.prepare("SELECT * FROM integrations WHERE is_public=1 ORDER BY id DESC").all();
+// Visibility: public cards are shown to everyone; private cards to any
+// signed-in user (both the "user" and "admin" roles).
+app.get("/api/integrations/data/all", async (req, res) => {
+  const signedIn = Boolean(getOptionalUser(req));
+  const rows = db.prepare(`SELECT * FROM integrations ${signedIn ? "" : "WHERE is_public=1"} ORDER BY id DESC`).all();
   const mapped = rows.map(mapIntegration);
   const values = await Promise.all(mapped.map(async (integration) => {
     try {
       return await fetchIntegrationData(integration);
     } catch (error) {
-      return { id: integration.id, title: integration.title, icon: integration.icon, error: error instanceof Error ? error.message : "Endpoint failed" };
+      return { id: integration.id, title: integration.title, icon: integration.icon, isPublic: integration.isPublic, error: error instanceof Error ? error.message : "Endpoint failed" };
     }
   }));
   res.json(values);
@@ -626,14 +862,41 @@ app.get("/api/users", auth, admin, (_req, res) => {
 });
 
 app.post("/api/users", auth, admin, (req, res) => {
-  const { username, password, role = "user" } = req.body;
-  if (!username?.trim() || !password || !["user", "admin"].includes(role)) return res.status(400).json({ error: "Valid username, password, and role are required" });
-  try {
-    const result = db.prepare("INSERT INTO users(username,password_hash,role) VALUES (?,?,?)").run(username.trim(), bcrypt.hashSync(password, 12), role);
-    res.status(201).json(db.prepare("SELECT id, username, role, created_at AS createdAt FROM users WHERE id=?").get(result.lastInsertRowid));
-  } catch {
-    res.status(409).json({ error: "Username already exists" });
+  const { username, password, role = "user" } = (req.body ?? {}) as { username?: unknown; password?: unknown; role?: unknown };
+  const name = typeof username === "string" ? username.trim() : "";
+  if (!name || typeof password !== "string" || !password || (role !== "user" && role !== "admin")) {
+    return res.status(400).json({ error: "Valid username, password, and role are required" });
   }
+  if (db.prepare("SELECT id FROM users WHERE username=?").get(name)) return res.status(409).json({ error: "Username already exists" });
+  const result = db.prepare("INSERT INTO users(username,password_hash,role) VALUES (?,?,?)").run(name, bcrypt.hashSync(password, 12), role);
+  res.status(201).json(db.prepare("SELECT id, username, role, created_at AS createdAt FROM users WHERE id=?").get(result.lastInsertRowid));
+});
+
+app.put("/api/users/:id", auth, admin, (req, res) => {
+  const current = (req as express.Request & { user: AuthUser }).user;
+  const id = Number(req.params.id);
+  if (!db.prepare("SELECT id FROM users WHERE id=?").get(id)) return res.status(404).json({ error: "User not found" });
+  const { password, role } = req.body as { password?: unknown; role?: unknown };
+  if (role !== undefined) {
+    if (role !== "user" && role !== "admin") return res.status(400).json({ error: "Role must be user or admin" });
+    if (id === current.id && role !== "admin") return res.status(400).json({ error: "You cannot remove your own admin role" });
+  }
+  if (password !== undefined && (typeof password !== "string" || !password)) {
+    return res.status(400).json({ error: "Password cannot be empty" });
+  }
+  db.transaction(() => {
+    if (role !== undefined) db.prepare("UPDATE users SET role=? WHERE id=?").run(role, id);
+    // Bumping token_version signs out every existing session for this user.
+    if (typeof password === "string") {
+      db.prepare("UPDATE users SET password_hash=?, token_version=token_version+1 WHERE id=?").run(bcrypt.hashSync(password, 12), id);
+    }
+  })();
+  // Changing your own password keeps *this* session alive with a fresh token;
+  // your other sessions (other devices) are still signed out.
+  if (typeof password === "string" && id === current.id) {
+    issueSession(res, db.prepare("SELECT id, username, role, token_version FROM users WHERE id=?").get(id));
+  }
+  res.json(db.prepare("SELECT id, username, role, created_at AS createdAt FROM users WHERE id=?").get(id));
 });
 
 app.delete("/api/users/:id", auth, admin, (req, res) => {

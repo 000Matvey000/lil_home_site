@@ -15,7 +15,8 @@ export type LinkRecord = {
   department: string;
   category: string;
   color: string;
-  thumbnail: { name: string; type: string; dataUrl: string } | null;
+  /** Served from /api/links/:id/thumbnail?v=... so browsers can cache it. */
+  thumbnail: { name: string; type: string; url: string } | null;
   attachment: { name: string; type: string } | null;
 };
 
@@ -33,17 +34,30 @@ export type SiteSettings = {
   headerSubtitle: string;
   announcementsTitle: string;
   linksTitle: string;
+  photosTitle: string;
   footerText: string;
   logoUrl: string;
   faviconUrl: string;
   bannerUrl: string;
   showHero: boolean;
+  showPhotos: boolean;
   showIntegrations: boolean;
   showAnnouncements: boolean;
   showLinks: boolean;
 };
 
-export type MappingValueType = "string" | "number" | "currency" | "percent" | "boolean" | "date" | "unix-seconds" | "url" | "image";
+export type Photo = {
+  id: number;
+  caption: string;
+  sortOrder: number;
+  source: "upload" | "url";
+  sourceUrl: string;
+  imageUrl: string;
+};
+
+export type FileValue = { name: string; base64: string };
+
+export type MappingValueType ="string" | "number" | "currency" | "percent" | "boolean" | "date" | "unix-seconds" | "url" | "image";
 export type MappingOperator = ">" | ">=" | "<" | "<=" | "==" | "!=";
 export type MappingCondition = {
   operator: MappingOperator;
@@ -94,4 +108,6 @@ export type IntegrationData = {
     valueType: MappingValueType;
   }>;
   error?: string;
+  /** false = only shown to signed-in users. */
+  isPublic?: boolean;
 };

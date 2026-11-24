@@ -71,6 +71,27 @@ docker compose -f docker/compose.prod.yaml logs -f home-hub
 docker compose -f docker/compose.prod.yaml down -v # Remove volumes as well
 ```
 
+## Validation checklist after startup
+
+Run these quick checks to confirm the stack is healthy:
+
+```bash
+docker compose -f docker/compose.yaml ps
+curl -fsS http://localhost:3001/healthz
+```
+
+For the HTTPS profile:
+
+```bash
+docker compose -f docker/compose.prod.yaml ps
+curl -kfsS https://localhost/healthz
+```
+
+Expected result:
+
+- `home-hub` status is `healthy`
+- `/healthz` returns JSON with `"status":"ok"`
+
 ## Environment variables (`docker/.env`)
 
 - `PORT` (default `3001`)

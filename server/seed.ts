@@ -11,6 +11,10 @@ export function seed() {
     announcementsTitle: "Announcements",
     linksTitle: "Useful links",
     footerText: "Home Hub keeps your household informed.",
+    showHero: "true",
+    showIntegrations: "true",
+    showAnnouncements: "true",
+    showLinks: "true",
   };
   const upsert = db.prepare("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
   db.transaction(() => {

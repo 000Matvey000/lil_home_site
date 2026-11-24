@@ -62,6 +62,15 @@ function toSqliteBool(value: unknown) {
   return 0;
 }
 
+function toBooleanSettingValue(value: unknown): "true" | "false" | null {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "false") return normalized;
+  }
+  return null;
+}
+
 function decodeBlob(row: any, prefix: "thumbnail" | "attachment") {
   if (!row[`${prefix}_data`]) return null;
   return {
@@ -316,10 +325,15 @@ app.get("/api/settings", (_req, res) => {
 
 app.put("/api/settings", auth, admin, (req, res) => {
   const upsert = db.prepare("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-  const editableKeys = ["siteName", "headerSubtitle", "heroBadge", "heroTitle", "heroDescription", "announcementsTitle", "linksTitle", "footerText"];
+  const editableTextKeys = ["siteName", "headerSubtitle", "heroBadge", "heroTitle", "heroDescription", "announcementsTitle", "linksTitle", "footerText"];
+  const editableBooleanKeys = ["showHero", "showIntegrations", "showAnnouncements", "showLinks"];
   db.transaction(() => {
-    for (const key of editableKeys) {
+    for (const key of editableTextKeys) {
       if (typeof req.body[key] === "string") upsert.run(key, req.body[key].trim());
+    }
+    for (const key of editableBooleanKeys) {
+      const normalized = toBooleanSettingValue(req.body[key]);
+      if (normalized !== null) upsert.run(key, normalized);
     }
   })();
   const settings = Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map((row: any) => [row.key, row.value]));

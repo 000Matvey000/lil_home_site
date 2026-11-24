@@ -595,7 +595,14 @@ function IntegrationSetupPage({ integrations, onRefresh, setError }: {
                 <td>
                   <div className="integration-actions">
                     <Button variant="outline" size="sm" onClick={() => loadFromIntegration(integration)}>Edit</Button>
-                    <Button variant="ghost" size="icon" onClick={() => api.deleteIntegration(integration.id).then(async () => { await onRefresh(); loadFromIntegration(undefined); }).catch((e) => setError(e.message))}><Trash2 size={14} /></Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Delete integration ${integration.title}`}
+                      onClick={() => api.deleteIntegration(integration.id).then(async () => { await onRefresh(); loadFromIntegration(undefined); }).catch((e) => setError(e.message))}
+                    >
+                      <Trash2 size={14} />
+                    </Button>
                   </div>
                 </td>
               </tr>
@@ -720,7 +727,7 @@ function IntegrationSetupPage({ integrations, onRefresh, setError }: {
         </Dialog.Portal>
       </Dialog.Root>
 
-      {toast && <div className="toast-popup">{toast}</div>}
+      {toast && <div className="toast-popup" role="status" aria-live="polite">{toast}</div>}
     </section>
   );
 }
@@ -952,6 +959,12 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <div className="background-fx" aria-hidden="true">
+        <div className="background-grid" />
+        <div className="orb orb-one" />
+        <div className="orb orb-two" />
+        <div className="orb orb-three" />
+      </div>
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark">{settings.logoUrl ? <img src={settings.logoUrl} alt="Site logo" /> : "H"}</div>
@@ -975,8 +988,8 @@ export function App() {
         </div>
       </header>
 
-      <main>
-        {error && <div className="error-banner">{error}<button onClick={() => setError("")}><X size={16} /></button></div>}
+      <main className="content-shell">
+        {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError("")}><X size={16} /></button></div>}
         {page === "integration-setup" && isAdmin ? (
           <IntegrationSetupPage integrations={integrations} onRefresh={refresh} setError={setError} />
         ) : (
@@ -1005,9 +1018,9 @@ export function App() {
                 <div className="integration-carousel-controls">
                   {settings.showIntegrations && integrationData.length > 1 && (
                     <>
-                      <Button variant="outline" size="sm" onClick={() => setActiveIntegrationIndex((prev) => (prev - 1 + integrationData.length) % integrationData.length)}>Prev</Button>
+                      <Button variant="outline" size="sm" aria-label="Show previous integration" onClick={() => setActiveIntegrationIndex((prev) => (prev - 1 + integrationData.length) % integrationData.length)}>Prev</Button>
                       <span>{activeIntegrationIndex + 1} / {integrationData.length}</span>
-                      <Button variant="outline" size="sm" onClick={() => setActiveIntegrationIndex((prev) => (prev + 1) % integrationData.length)}>Next</Button>
+                      <Button variant="outline" size="sm" aria-label="Show next integration" onClick={() => setActiveIntegrationIndex((prev) => (prev + 1) % integrationData.length)}>Next</Button>
                     </>
                   )}
                   {isAdmin && (

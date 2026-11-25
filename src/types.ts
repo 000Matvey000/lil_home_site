@@ -70,8 +70,11 @@ export type Photo = {
 
 export type FileValue = { name: string; base64: string };
 
-export type MappingValueType ="string" | "number" | "currency" | "percent" | "boolean" | "date" | "unix-seconds" | "url" | "image";
+// Integration mapping types mirror server/mapping.ts.
+export type MappingValueType = "string" | "number" | "currency" | "percent" | "boolean" | "date" | "unix-seconds" | "url" | "image" | "list";
 export type MappingOperator = ">" | ">=" | "<" | "<=" | "==" | "!=";
+export type DateStyle = "datetime" | "date" | "time" | "relative";
+export type FieldSize = "small" | "normal" | "large";
 export type MappingCondition = {
   operator: MappingOperator;
   value: number;
@@ -80,8 +83,22 @@ export type MappingCondition = {
 
 export type IntegrationMapping = {
   label: string;
+  /** a.b[0].c, items[*].title (every item as a list) or ["key with.dots"]. Empty = the whole root. */
   path: string;
   valueType: MappingValueType;
+  /** "Middle logic": a JavaScript expression, or a function body using `return`. */
+  transform?: string;
+  group?: string;
+  prefix?: string;
+  suffix?: string;
+  decimals?: number;
+  currency?: string;
+  dateStyle?: DateStyle;
+  maxLength?: number;
+  maxItems?: number;
+  size?: FieldSize;
+  wide?: boolean;
+  hideIfEmpty?: boolean;
   emoji?: string;
   positiveEmoji?: string;
   negativeEmoji?: string;
@@ -92,6 +109,8 @@ export type IntegrationMapping = {
   conditionFalseEmoji?: string;
   conditionMode?: "AND" | "OR";
   conditions?: MappingCondition[];
+  /** Client-only React key for the mapping editor; stripped before saving. */
+  _key?: string;
 };
 
 export type IntegrationConfig = {
@@ -108,18 +127,39 @@ export type IntegrationConfig = {
   mappings: IntegrationMapping[];
 };
 
+export type IntegrationField = {
+  /** Index of the mapping that produced this field. */
+  index: number;
+  label: string;
+  rawValue: unknown;
+  displayValue: string;
+  /** Untruncated text when maxLength shortened displayValue. */
+  fullValue?: string;
+  emoji: string;
+  valueType: MappingValueType;
+  group?: string;
+  size?: FieldSize;
+  wide?: boolean;
+  /** Empty and set to hide when empty: skipped on the card. */
+  hidden?: boolean;
+  items?: string[];
+  /** Dates are formatted in the browser so they use the viewer's timezone. */
+  isoValue?: string;
+  /** A date field whose value is a list: one ISO string per entry (or the text, if it isn't a date). */
+  isoItems?: string[];
+  dateStyle?: DateStyle;
+  prefix?: string;
+  suffix?: string;
+  /** The field's logic failed. */
+  error?: string;
+};
+
 export type IntegrationData = {
   id: number;
   title: string;
   icon: string;
   fetchedAt?: string;
-  fields?: Array<{
-    label: string;
-    rawValue: unknown;
-    displayValue: string;
-    emoji: string;
-    valueType: MappingValueType;
-  }>;
+  fields?: IntegrationField[];
   error?: string;
   /** false = only shown to signed-in users. */
   isPublic?: boolean;

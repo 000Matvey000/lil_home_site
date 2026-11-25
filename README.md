@@ -9,14 +9,16 @@ Home Hub is a mobile-friendly links and announcements dashboard for a Raspberry 
 - Multi-category tags using comma-separated free text
 - Optional thumbnail images and downloadable attachments
 - Announcements displayed as visual tiles
-- Configurable custom API integration cards (weather/stocks/etc.) with JSON path mapping and conditional emoji output
+- Configurable custom API integration cards (weather/stocks/etc.) built with a drag-and-drop **mapping designer**: **Source** (a tree of a sample response, loaded from the endpoint or pasted) → **Logic** (optional JavaScript) → **Target** (label, type and display options), with a live card preview
 - **Integrations** admin tab with a filterable integration table, full add/edit form with a sticky save bar, and in-place test preview
-- Advanced mapper rules with multiple conditions per field (`AND`/`OR`) and condition-specific emoji output
+- Mapping logic is a JavaScript expression (or a function body with `return`) that receives `value`, `data` and `root`. It runs on the server in a QuickJS WebAssembly sandbox with no network, file or process access, a 100 ms limit per field and a memory cap; errors show on the field instead of breaking the card
+- Display options per field: group headings, prefix/suffix, decimals, currency, date style (including "3 hours ago"), max text length, max list items, small/normal/large size, full width, hide when empty, plus emoji rules with `AND`/`OR` conditions
+- Paths support `a.b[0]`, every item of a list with `items[*].title` (shown as a bullet list) and keys with dots or spaces via `["odd.key"]`
 - Integration config import/export as JSON for backup and migration between environments
 - Token-safe integration export by default (optional include-tokens checkbox)
 - Per-integration visibility: **public** cards show to every visitor, **private** cards only to signed-in users (either role)
-- Expandable AI helper section in Integration Setup with a copy-ready markdown template for generating valid import JSON from sample endpoint data
-- Integration mapping supports URL/image rendering and unix timestamp conversion (`unix-seconds`)
+- Expandable AI helper section with a copy-ready prompt that documents the full mapping schema (logic, groups, lists, display options) for generating valid import JSON from sample endpoint data
+- Dates are formatted in each viewer's browser, so they use the viewer's own timezone and locale
 - Live data viewer uses a carousel with a scrollable integration details panel
 - Integration import is validated and applied in a single database transaction. "Add to list" skips invalid entries and reports them; "Replace all" only runs when every entry is valid, so a bad file never wipes your existing integrations
 - Unified toast notifications (success, info, and friendly error messages) and confirm-before-delete dialogs

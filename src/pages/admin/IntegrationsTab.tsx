@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Bot, Check, Copy, Download, FlaskConical, Pencil, Plug, Plus, Search, Trash2, Upload } from "lucide-react";
 import { api } from "../../api";
-import type { IntegrationConfig, IntegrationData, IntegrationMapping, MappingCondition, MappingOperator } from "../../types";
+import type { IntegrationConfig, IntegrationData, IntegrationMapping } from "../../types";
 import { copyText, selectElementText } from "../../lib/clipboard";
 import { errorMessage } from "../../lib/helpers";
 import { Badge } from "../../components/ui/badge";
@@ -12,72 +12,13 @@ import { Field, Input, Select } from "../../components/ui/input";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { IntegrationFields } from "../../components/integration-field";
 import { useToast } from "../../components/toast";
+import { MappingDesigner } from "./mapping/MappingDesigner";
+import { cleanMappings, withRowKeys } from "./mapping/mapping-utils";
+import { AI_IMPORT_GUIDE } from "./mapping/ai-guide";
 
-const VALUE_TYPES = ["string", "number", "currency", "percent", "boolean", "date", "unix-seconds", "url", "image"] as const;
-const OPERATORS: MappingOperator[] = [">", ">=", "<", "<=", "==", "!="];
 
-const AI_IMPORT_GUIDE = [
-  "```markdown",
-  "# Task: Build Home Hub integration import JSON",
-  "",
-  "Given:",
-  "- endpoint metadata (URL, auth scheme/header/token, response root path)",
-  "- one or more sample JSON responses from the endpoint",
-  "- desired dashboard fields and labels",
-  "",
-  "Output ONLY valid JSON matching this shape:",
-  "",
-  "{",
-  "  \"version\": 1,",
-  "  \"exportedAt\": \"<ISO timestamp>\",",
-  "  \"integrations\": [",
-  "    {",
-  "      \"title\": \"<name shown in UI>\",",
-  "      \"icon\": \"<emoji>\",",
-  "      \"endpointUrl\": \"<full URL>\",",
-  "      \"authHeader\": \"Authorization\",",
-  "      \"authToken\": \"<token or empty>\",",
-  "      \"authScheme\": \"None|Bearer|Token\",",
-  "      \"isPublic\": false,",
-  "      \"responsePath\": \"<optional nested root path>\",",
-  "      \"refreshMinutes\": 10,",
-  "      \"mappings\": [",
-  "        {",
-  "          \"label\": \"<field label>\",",
-  "          \"path\": \"<nested JSON path like data.quote.price or items[0].close>\",",
-  "          \"valueType\": \"string|number|currency|percent|boolean|date|unix-seconds|url|image\",",
-  "          \"emoji\": \"<default emoji or empty>\",",
-  "          \"positiveEmoji\": \"<optional>\",",
-  "          \"negativeEmoji\": \"<optional>\",",
-  "          \"zeroEmoji\": \"<optional>\",",
-  "          \"conditionMode\": \"AND|OR\",",
-  "          \"conditions\": [",
-  "            { \"operator\": \">|>=|<|<=|==|!=\", \"value\": 0, \"emoji\": \"<emoji when matched>\" }",
-  "          ]",
-  "        }",
-  "      ]",
-  "    }",
-  "  ]",
-  "}",
-  "",
-  "Rules:",
-  "1. Resolve all field paths from the sample JSON accurately.",
-  "2. Use responsePath to reduce repeated prefixes when useful.",
-  "3. If a mapping has no conditions, set conditions to an empty array.",
-  "4. Never include comments or markdown outside this JSON output.",
-  "5. Set isPublic=true only if the data is safe for all visitors.",
-  "```",
-].join("\n");
 
 type ImportRow = Partial<Omit<IntegrationConfig, "id">>;
-
-function createCondition(): MappingCondition {
-  return { operator: ">", value: 0, emoji: "" };
-}
-
-function createMapping(): IntegrationMapping {
-  return { label: "", path: "", valueType: "string", emoji: "", conditionMode: "AND", conditions: [] };
-}
 
 export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> }) {
   const toast = useToast();
@@ -88,6 +29,8 @@ export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> 
   const [integrations, setIntegrations] = useState<IntegrationConfig[]>([]);
   const [copiedGuide, setCopiedGuide] = useState(false);
   const [editingId, setEditingId] = useState<number | "new">("new");
+  /** Bumped whenever the form is (re)loaded, so the mapping designer starts fresh even when editingId stays "new". */
+  const [editorSession, setEditorSession] = useState(0);
   const [title, setTitle] = useState("");
   const [icon, setIcon] = useState("🧩");
   const [endpointUrl, setEndpointUrl] = useState("");
@@ -98,7 +41,7 @@ export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> 
   const [exportWithTokens, setExportWithTokens] = useState(false);
   const [responsePath, setResponsePath] = useState("");
   const [refreshMinutes, setRefreshMinutes] = useState(10);
-  const [mappings, setMappings] = useState<IntegrationMapping[]>([createMapping()]);
+  const [mappings, setMappings] = useState<IntegrationMapping[]>([]);
   const [preview, setPreview] = useState<IntegrationData | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -131,6 +74,7 @@ export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> 
 
   function loadFromIntegration(integration?: IntegrationConfig) {
     setPreview(null);
+    setEditorSession((session) => session + 1);
     if (!integration) {
       setEditingId("new");
       setTitle("");
@@ -142,7 +86,7 @@ export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> 
       setIsPublic(false);
       setResponsePath("");
       setRefreshMinutes(10);
-      setMappings([createMapping()]);
+      setMappings([]);
       return;
     }
     setEditingId(integration.id);
@@ -155,50 +99,12 @@ export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> 
     setIsPublic(Boolean(integration.isPublic));
     setResponsePath(integration.responsePath || "");
     setRefreshMinutes(integration.refreshMinutes || 10);
-    setMappings(
-      integration.mappings?.length
-        ? integration.mappings.map((mapping) => ({
-            ...mapping,
-            conditionMode: mapping.conditionMode || "AND",
-            conditions: Array.isArray(mapping.conditions) ? mapping.conditions : [],
-          }))
-        : [createMapping()],
-    );
+    setMappings(withRowKeys(integration.mappings ?? []));
   }
 
   function openEditor(integration?: IntegrationConfig) {
     loadFromIntegration(integration);
     requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
-  }
-
-  function updateMapping(index: number, key: keyof IntegrationMapping, value: string) {
-    setMappings((prev) => prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
-  }
-
-  function updateCondition(mappingIndex: number, conditionIndex: number, key: keyof MappingCondition, value: string) {
-    setMappings((prev) =>
-      prev.map((mapping, i) => {
-        if (i !== mappingIndex) return mapping;
-        const conditions = Array.isArray(mapping.conditions) ? [...mapping.conditions] : [];
-        const current = conditions[conditionIndex] || createCondition();
-        conditions[conditionIndex] = key === "value" ? { ...current, value: Number(value) } : { ...current, [key]: value };
-        return { ...mapping, conditions };
-      }),
-    );
-  }
-
-  function addCondition(mappingIndex: number) {
-    setMappings((prev) => prev.map((mapping, i) => (i === mappingIndex ? { ...mapping, conditions: [...(mapping.conditions || []), createCondition()] } : mapping)));
-  }
-
-  function deleteCondition(mappingIndex: number, conditionIndex: number) {
-    setMappings((prev) =>
-      prev.map((mapping, i) => (i === mappingIndex ? { ...mapping, conditions: (mapping.conditions || []).filter((_, idx) => idx !== conditionIndex) } : mapping)),
-    );
-  }
-
-  function deleteMapping(index: number) {
-    setMappings((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
   }
 
   function buildPayload() {
@@ -212,21 +118,8 @@ export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> 
       isPublic,
       responsePath,
       refreshMinutes,
-      mappings: mappings
-        .filter((mapping) => mapping.label?.trim() && mapping.path?.trim())
-        .map((mapping) => ({
-          label: mapping.label.trim(),
-          path: mapping.path.trim(),
-          valueType: mapping.valueType,
-          emoji: mapping.emoji || "",
-          positiveEmoji: mapping.positiveEmoji || "",
-          negativeEmoji: mapping.negativeEmoji || "",
-          zeroEmoji: mapping.zeroEmoji || "",
-          conditionMode: mapping.conditionMode || "AND",
-          conditions: (mapping.conditions || [])
-            .filter((condition) => condition.emoji?.trim() && Number.isFinite(condition.value))
-            .map((condition) => ({ operator: condition.operator, value: Number(condition.value), emoji: condition.emoji.trim() })),
-        })),
+      // Rows without a label, or without a source path and logic, are skipped.
+      mappings: cleanMappings(mappings),
     };
   }
 
@@ -265,7 +158,7 @@ export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> 
   function exportIntegrations() {
     try {
       const payload = {
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
         integrations: integrations.map((item) => ({
           title: item.title,
@@ -464,55 +357,19 @@ export function IntegrationsTab({ onChanged }: { onChanged: () => Promise<void> 
             </div>
 
             <div className="form-section" role="group" aria-labelledby={`${sectionId}-mapper`}>
-              <h4 className="form-section-title" id={`${sectionId}-mapper`}>Field mapper</h4>
-              {mappings.map((mapping, mappingIndex) => (
-                <div key={mappingIndex} className="mapping-card">
-                  <div className="mapping-card-header">
-                    <strong>Field {mappingIndex + 1}</strong>
-                    <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove field ${mappingIndex + 1}`} disabled={mappings.length === 1} onClick={() => deleteMapping(mappingIndex)}><Trash2 size={14} /></Button>
-                  </div>
-                  <div className="form-grid mapping-main">
-                    <Field label="Label"><Input placeholder="Temperature" value={mapping.label} onChange={(e) => updateMapping(mappingIndex, "label", e.target.value)} /></Field>
-                    <Field label="JSON path"><Input placeholder="current.temp_c or prices[0].close" value={mapping.path} onChange={(e) => updateMapping(mappingIndex, "path", e.target.value)} /></Field>
-                    <Field label="Type">
-                      <Select value={mapping.valueType} onChange={(e) => updateMapping(mappingIndex, "valueType", e.target.value)}>
-                        {VALUE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-                      </Select>
-                    </Field>
-                  </div>
-                  <div className="form-grid form-grid-4">
-                    <Field label="Default emoji"><Input value={mapping.emoji || ""} onChange={(e) => updateMapping(mappingIndex, "emoji", e.target.value)} /></Field>
-                    <Field label="If positive"><Input value={mapping.positiveEmoji || ""} onChange={(e) => updateMapping(mappingIndex, "positiveEmoji", e.target.value)} /></Field>
-                    <Field label="If negative"><Input value={mapping.negativeEmoji || ""} onChange={(e) => updateMapping(mappingIndex, "negativeEmoji", e.target.value)} /></Field>
-                    <Field label="If zero"><Input value={mapping.zeroEmoji || ""} onChange={(e) => updateMapping(mappingIndex, "zeroEmoji", e.target.value)} /></Field>
-                  </div>
-                  <div className="condition-block">
-                    <div className="condition-header">
-                      <span>Advanced conditions</span>
-                      <div className="condition-actions">
-                        {(mapping.conditions?.length ?? 0) > 1 && (
-                          <Select aria-label="Condition mode" className="h-8 w-auto" value={mapping.conditionMode || "AND"} onChange={(e) => updateMapping(mappingIndex, "conditionMode", e.target.value)}>
-                            <option value="AND">Match all (AND)</option>
-                            <option value="OR">Match any (OR)</option>
-                          </Select>
-                        )}
-                        <Button type="button" variant="ghost" size="sm" onClick={() => addCondition(mappingIndex)}><Plus size={13} /> Condition</Button>
-                      </div>
-                    </div>
-                    {(mapping.conditions || []).map((condition, conditionIndex) => (
-                      <div className="condition-row" key={`${mappingIndex}-${conditionIndex}`}>
-                        <Select aria-label="Operator" value={condition.operator} onChange={(e) => updateCondition(mappingIndex, conditionIndex, "operator", e.target.value as MappingOperator)}>
-                          {OPERATORS.map((operator) => <option key={operator} value={operator}>{operator}</option>)}
-                        </Select>
-                        <Input aria-label="Value" type="number" value={condition.value} onChange={(e) => updateCondition(mappingIndex, conditionIndex, "value", e.target.value)} />
-                        <Input aria-label="Emoji when true" placeholder="Emoji when true" value={condition.emoji} onChange={(e) => updateCondition(mappingIndex, conditionIndex, "emoji", e.target.value)} />
-                        <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove condition" onClick={() => deleteCondition(mappingIndex, conditionIndex)}><Trash2 size={14} /></Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-              <Button type="button" variant="outline" className="w-full border-dashed" onClick={() => setMappings((prev) => [...prev, createMapping()])}><Plus size={14} /> Add field</Button>
+              <div className="form-section-heading">
+                <h4 className="form-section-title" id={`${sectionId}-mapper`}>Field mapping</h4>
+                <span className="muted-text">Drag fields from the response into rows, transform them with optional logic, then set how each one looks on the card.</span>
+              </div>
+              {/* Remount whenever the form is loaded or reset, so a sample and preview don't leak into the next integration. */}
+              <MappingDesigner
+                key={editorSession}
+                mappings={mappings}
+                setMappings={setMappings}
+                responsePath={responsePath}
+                setResponsePath={setResponsePath}
+                endpoint={{ title, icon, endpointUrl, authHeader, authToken, authScheme }}
+              />
             </div>
 
             {preview && (

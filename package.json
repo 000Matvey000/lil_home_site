@@ -26,6 +26,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.468.0",
+    "quickjs-emscripten": "^0.32.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "simple-icons": "^16.38.1",

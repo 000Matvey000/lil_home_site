@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import path from "node:path";
 import fs from "node:fs";
 import { contentHash, db } from "./db";
+import { buildFields, normalizeMappings, type IntegrationMapping } from "./mapping";
 import "./seed";
 
 const app = express();
@@ -36,27 +37,12 @@ app.use(cookieParser());
 
 type Role = "user" | "admin";
 type AuthUser = { id: number; username: string; role: Role };
-type Operator = ">" | ">=" | "<" | "<=" | "==" | "!=";
-type MappingValueType = "string" | "number" | "currency" | "percent" | "boolean" | "date" | "unix-seconds" | "url" | "image";
-type MappingCondition = { operator: Operator; value: number; emoji: string };
-type IntegrationMapping = {
-  label: string;
-  path: string;
-  valueType: MappingValueType;
-  emoji?: string;
-  positiveEmoji?: string;
-  negativeEmoji?: string;
-  zeroEmoji?: string;
-  conditionOperator?: Operator;
-  conditionValue?: number;
-  conditionTrueEmoji?: string;
-  conditionFalseEmoji?: string;
-  conditionMode?: "AND" | "OR";
-  conditions?: MappingCondition[];
-};
-
 const integrationCache = new Map<number, { expiresAt: number; value: unknown }>();
 const INTEGRATION_TIMEOUT_MS = 10_000;
+// Guards the Pi's memory against huge API responses.
+const INTEGRATION_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+// The mapping editor's Source panel only needs a representative sample.
+const SAMPLE_MAX_BYTES = 1024 * 1024;
 const ASSET_KEYS = ["logo", "favicon", "banner"];
 const PHOTO_CAPTION_MAX = 140; // keep in sync with src/pages/admin/PhotosTab.tsx
 // Uploaded images are served from our own origin; a strict CSP keeps an
@@ -133,10 +119,17 @@ function parseUpload(value: unknown, { imageOnly = false, label = "File" } = {})
 }
 
 function mapIntegration(row: any) {
+  // Rows saved before validation existed may hold odd entries; keep the good
+  // ones rather than dropping the whole integration.
   let mappings: IntegrationMapping[] = [];
   try {
     const parsed = JSON.parse(row.mappings_json);
-    if (Array.isArray(parsed)) mappings = parsed;
+    if (Array.isArray(parsed)) {
+      mappings = parsed.flatMap((item) => {
+        const normalized = normalizeMappings([item]);
+        return typeof normalized === "string" ? [] : normalized;
+      });
+    }
   } catch {
     mappings = [];
   }
@@ -203,149 +196,77 @@ function blobFromBase64(value?: string) {
   return { type: match[1], data: Buffer.from(match[2], "base64") };
 }
 
-function getByPath(data: unknown, rawPath: string): unknown {
-  if (!rawPath.trim()) return data;
-  const normalized = rawPath.replace(/\[(\d+)\]/g, ".$1");
-  return normalized.split(".").filter(Boolean).reduce<unknown>((acc, part) => {
-    if (acc === null || acc === undefined) return undefined;
-    if (typeof acc !== "object") return undefined;
-    return (acc as Record<string, unknown>)[part];
-  }, data);
-}
+type EndpointConfig = { title: string; endpointUrl: string; authHeader: string; authToken: string; authScheme: string };
 
-function evaluateCondition(value: unknown, operator: Operator, conditionValue: number) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return false;
-  switch (operator) {
-    case ">":
-      return numeric > conditionValue;
-    case ">=":
-      return numeric >= conditionValue;
-    case "<":
-      return numeric < conditionValue;
-    case "<=":
-      return numeric <= conditionValue;
-    case "==":
-      return numeric === conditionValue;
-    case "!=":
-      return numeric !== conditionValue;
+/**
+ * Read a response body as UTF-8, giving up as soon as it passes maxBytes.
+ * Chunked responses have no Content-Length, so the bytes are counted as they
+ * arrive instead of buffering the whole body first. The count is after
+ * decompression, so a small gzip that expands hugely is caught too.
+ */
+async function readBodyCapped(response: Response, maxBytes: number, tooLarge: () => Error) {
+  if (!response.body) return "";
+  if (Number(response.headers.get("content-length")) > maxBytes) {
+    await response.body.cancel().catch(() => undefined);
+    throw tooLarge();
   }
-}
-
-function formatValue(value: unknown, type: MappingValueType) {
-  if (value === null || value === undefined) return "—";
-  if (type === "number") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed.toLocaleString() : String(value);
-  }
-  if (type === "currency") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed.toLocaleString(undefined, { style: "currency", currency: "USD" }) : String(value);
-  }
-  if (type === "percent") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? `${parsed.toFixed(2)}%` : String(value);
-  }
-  if (type === "boolean") {
-    if (typeof value === "boolean") return value ? "Yes" : "No";
-    return String(value);
-  }
-  if (type === "date") {
-    const numeric = Number(value);
-    const date = Number.isFinite(numeric)
-      ? new Date(numeric > 10_000_000_000 ? numeric : numeric * 1000)
-      : new Date(String(value));
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleString();
-  }
-  if (type === "unix-seconds") {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return String(value);
-    return new Date(parsed * 1000).toLocaleString();
-  }
-  if (type === "url" || type === "image") {
-    return String(value);
-  }
-  return typeof value === "object" ? JSON.stringify(value) : String(value);
-}
-
-function resolveEmoji(value: unknown, mapping: IntegrationMapping) {
-  if (Array.isArray(mapping.conditions) && mapping.conditions.length) {
-    const checks = mapping.conditions.map((condition) =>
-      evaluateCondition(value, condition.operator, Number(condition.value)),
-    );
-    const mode = mapping.conditionMode === "OR" ? "OR" : "AND";
-    const matched = mode === "OR" ? checks.some(Boolean) : checks.every(Boolean);
-    if (matched) {
-      const active = mapping.conditions.find((condition, index) => checks[index] && condition.emoji?.trim());
-      return active?.emoji || mapping.emoji || "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw tooLarge();
     }
-    return mapping.conditionFalseEmoji || "";
+    chunks.push(value);
   }
-  if (mapping.conditionOperator && Number.isFinite(mapping.conditionValue)) {
-    const matched = evaluateCondition(value, mapping.conditionOperator, Number(mapping.conditionValue));
-    if (matched) return mapping.conditionTrueEmoji || mapping.emoji || "";
-    return mapping.conditionFalseEmoji || "";
+  // TextDecoder drops a leading byte-order mark, as response.text() did.
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+/** GET the endpoint and parse JSON, with a timeout and a size cap. */
+async function fetchEndpointJson(endpoint: EndpointConfig, maxBytes = INTEGRATION_MAX_RESPONSE_BYTES): Promise<unknown> {
+  const headers: Record<string, string> = {};
+  if (endpoint.authToken) {
+    const header = endpoint.authHeader || "Authorization";
+    headers[header] = endpoint.authScheme === "Bearer" ? `Bearer ${endpoint.authToken}` : endpoint.authToken;
   }
-  if (mapping.valueType === "number" || mapping.valueType === "currency" || mapping.valueType === "percent") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      if (parsed > 0 && mapping.positiveEmoji) return mapping.positiveEmoji;
-      if (parsed < 0 && mapping.negativeEmoji) return mapping.negativeEmoji;
-      if (parsed === 0 && mapping.zeroEmoji) return mapping.zeroEmoji;
+  const tooLarge = () => new Error(`Endpoint ${endpoint.title} returned more than ${Math.round(maxBytes / 1024 / 1024)} MB`);
+  // The timeout signal also covers reading the body, so fetch and parse share one try.
+  try {
+    const response = await fetch(endpoint.endpointUrl, { headers, signal: AbortSignal.timeout(INTEGRATION_TIMEOUT_MS) });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`Endpoint ${endpoint.title} failed with ${response.status}`);
     }
+    const body = await readBodyCapped(response, maxBytes, tooLarge);
+    try {
+      return JSON.parse(body);
+    } catch {
+      throw new Error(`Endpoint ${endpoint.title} did not return JSON`);
+    }
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new Error(`Endpoint ${endpoint.title} timed out after ${INTEGRATION_TIMEOUT_MS / 1000}s`);
+    }
+    throw error;
   }
-  return mapping.emoji || "";
 }
 
 async function fetchIntegrationData(integration: ReturnType<typeof mapIntegration>, useCache = true) {
   const cached = integrationCache.get(integration.id);
   if (useCache && cached && cached.expiresAt > Date.now()) return cached.value;
 
-  const headers: Record<string, string> = {};
-  if (integration.authToken) {
-    if (integration.authScheme === "Bearer") headers[integration.authHeader || "Authorization"] = `Bearer ${integration.authToken}`;
-    else if (integration.authScheme === "Token") headers[integration.authHeader || "Authorization"] = integration.authToken;
-    else headers[integration.authHeader || "Authorization"] = integration.authToken;
-  }
-
-  // The timeout signal also covers reading the body, so the whole
-  // fetch-and-parse sits inside one try to get a consistent error message.
-  let json: unknown;
-  try {
-    const response = await fetch(integration.endpointUrl, { headers, signal: AbortSignal.timeout(INTEGRATION_TIMEOUT_MS) });
-    if (!response.ok) throw new Error(`Endpoint ${integration.title} failed with ${response.status}`);
-    const body = await response.text();
-    try {
-      json = JSON.parse(body);
-    } catch {
-      throw new Error(`Endpoint ${integration.title} did not return JSON`);
-    }
-  } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new Error(`Endpoint ${integration.title} timed out after ${INTEGRATION_TIMEOUT_MS / 1000}s`);
-    }
-    throw error;
-  }
-  const scoped = getByPath(json, integration.responsePath) ?? json;
-
-  const fields = integration.mappings.map((mapping) => {
-    const rawValue = getByPath(scoped, mapping.path);
-    return {
-      label: mapping.label,
-      rawValue,
-      displayValue: formatValue(rawValue, mapping.valueType || "string"),
-      emoji: resolveEmoji(rawValue, mapping),
-      valueType: mapping.valueType || "string",
-    };
-  });
-
+  const json = await fetchEndpointJson(integration);
   const value = {
     id: integration.id,
     title: integration.title,
     icon: integration.icon,
     isPublic: integration.isPublic,
-    fields,
+    fields: await buildFields(integration.mappings, json, integration.responsePath),
     fetchedAt: new Date().toISOString(),
   };
 
@@ -750,8 +671,8 @@ function parseIntegrationInput(raw: any): IntegrationInput | string {
   } catch {
     return `Endpoint URL for "${title}" is not a valid URL`;
   }
-  const mappings = raw?.mappings ?? [];
-  if (!Array.isArray(mappings)) return "Mappings must be an array";
+  const mappings = normalizeMappings(raw?.mappings);
+  if (typeof mappings === "string") return `"${title}": ${mappings}`;
   return {
     title,
     endpointUrl,
@@ -822,50 +743,66 @@ app.put("/api/integrations/:id", auth, admin, (req, res) => {
   res.json(mapIntegration(db.prepare("SELECT * FROM integrations WHERE id=?").get(req.params.id)));
 });
 
-app.post("/api/integrations/test", auth, admin, async (req, res) => {
-  const {
-    title = "Preview",
-    icon = "🧩",
-    endpointUrl,
-    authHeader = "Authorization",
-    authToken = "",
-    authScheme = "Bearer",
-    responsePath = "",
-    refreshMinutes = 10,
-    mappings = [],
-  } = req.body as {
-    title?: string;
-    icon?: string;
-    endpointUrl?: string;
-    authHeader?: string;
-    authToken?: string;
-    authScheme?: string;
-    responsePath?: string;
-    refreshMinutes?: number;
-    mappings?: IntegrationMapping[];
+/** Endpoint settings from an editor request; nothing here is saved. */
+function readEndpointConfig(body: any): EndpointConfig & { responsePath: string } {
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  return {
+    title: text(body?.title) || "Preview",
+    endpointUrl: text(body?.endpointUrl),
+    authHeader: text(body?.authHeader) || "Authorization",
+    authToken: body?.authToken == null ? "" : String(body.authToken),
+    authScheme: text(body?.authScheme) || "Bearer",
+    responsePath: text(body?.responsePath),
   };
-  if (!endpointUrl?.trim()) return res.status(400).json({ error: "Endpoint URL is required for test" });
-  if (!Array.isArray(mappings)) return res.status(400).json({ error: "Mappings must be an array" });
+}
+
+function checkEndpointUrl(url: string) {
+  if (!url) return "Endpoint URL is required for test";
   try {
-    const payload = await fetchIntegrationData(
-      {
-        id: 0,
-        title: title.trim() || "Preview",
-        icon: icon.trim() || "🧩",
-        endpointUrl: endpointUrl.trim(),
-        authHeader: authHeader.trim() || "Authorization",
-        authToken: String(authToken),
-        authScheme,
-        isPublic: false,
-        responsePath: responsePath.trim(),
-        refreshMinutes: Math.max(1, Number(refreshMinutes) || 10),
-        mappings,
-      },
-      false,
-    );
-    res.json(payload);
+    const { protocol } = new URL(url);
+    return protocol === "http:" || protocol === "https:" ? null : "Endpoint URL must start with http:// or https://";
+  } catch {
+    return "Endpoint URL is not a valid URL";
+  }
+}
+
+/**
+ * Preview the card for unsaved settings. With `sample` (JSON pasted or loaded
+ * in the mapping editor) the fields are built from it without calling the
+ * endpoint, so the editor can re-run the logic on every change.
+ */
+app.post("/api/integrations/test", auth, admin, async (req, res) => {
+  const config = readEndpointConfig(req.body);
+  const mappings = normalizeMappings(req.body?.mappings);
+  if (typeof mappings === "string") return res.status(400).json({ error: mappings });
+  const hasSample = req.body && Object.prototype.hasOwnProperty.call(req.body, "sample");
+  if (!hasSample) {
+    const urlProblem = checkEndpointUrl(config.endpointUrl);
+    if (urlProblem) return res.status(400).json({ error: urlProblem });
+  }
+  try {
+    const json = hasSample ? req.body.sample : await fetchEndpointJson(config);
+    res.json({
+      id: 0,
+      title: config.title,
+      icon: typeof req.body?.icon === "string" && req.body.icon.trim() ? req.body.icon.trim() : "🧩",
+      fields: await buildFields(mappings, json, config.responsePath),
+      fetchedAt: new Date().toISOString(),
+    });
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : "Integration test failed" });
+  }
+});
+
+/** Raw JSON from the endpoint for the mapping editor's Source panel. */
+app.post("/api/integrations/sample", auth, admin, async (req, res) => {
+  const config = readEndpointConfig(req.body);
+  const urlProblem = checkEndpointUrl(config.endpointUrl);
+  if (urlProblem) return res.status(400).json({ error: urlProblem });
+  try {
+    res.json({ data: await fetchEndpointJson(config, SAMPLE_MAX_BYTES) });
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : "Could not load a sample" });
   }
 });
 

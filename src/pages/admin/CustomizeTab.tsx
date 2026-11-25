@@ -178,20 +178,20 @@ function FontPanel({ settings, setSettings }: { settings: SiteSettings; setSetti
   const [customMode, setCustomMode] = useState(false);
   const isPopular = font === "" || POPULAR_FONTS.some((option) => option.name === font);
   const selectValue = customMode || !isPopular ? CUSTOM_FONT : font;
-  const [status, setStatus] = useState<"idle" | "loading" | "ok" | "missing">("idle");
+  // Result of the last preview load, tagged with the font it was for. Status is
+  // derived from it rather than set inside the effect on every keystroke.
+  const [loaded, setLoaded] = useState<{ font: string; ok: boolean } | null>(null);
   const nameValid = font === "" || isValidFontName(font);
+  const status: "idle" | "loading" | "ok" | "missing" =
+    !font || !nameValid ? "idle" : loaded?.font !== font ? "loading" : loaded.ok ? "ok" : "missing";
 
   // Load the chosen font into a separate preview slot; the live site keeps its
   // font until you save.
   useEffect(() => {
-    if (!font || !isValidFontName(font)) {
-      setStatus("idle");
-      return;
-    }
+    if (!font || !isValidFontName(font)) return;
     let cancelled = false;
-    setStatus("loading");
     const timer = window.setTimeout(() => {
-      void loadGoogleFont(font, "font-preview").then((ok) => { if (!cancelled) setStatus(ok ? "ok" : "missing"); });
+      void loadGoogleFont(font, "font-preview").then((ok) => { if (!cancelled) setLoaded({ font, ok }); });
     }, 400);
     return () => {
       cancelled = true;

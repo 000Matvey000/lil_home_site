@@ -48,6 +48,9 @@ export const api = {
   deleteIntegration: (id: number) => request<void>(`/api/integrations/${id}`, { method: "DELETE" }),
   importIntegrations: (value: { mode: "append" | "replace"; integrations: unknown[] }) =>
     request<{ imported: number; skipped: number; problems: string[] }>("/api/integrations/import", { method: "POST", body: JSON.stringify(value) }),
-  testIntegration: (value: unknown) =>request<IntegrationData>("/api/integrations/test", { method: "POST", body: JSON.stringify(value) }),
+  /** Preview the card for unsaved settings; pass `sample` to build fields from that JSON instead of calling the endpoint. */
+  testIntegration: (value: unknown) => request<IntegrationData>("/api/integrations/test", { method: "POST", body: JSON.stringify(value) }),
+  /** Raw JSON from the endpoint, for the mapping editor's Source panel. */
+  integrationSample: (value: unknown) => request<{ data: unknown }>("/api/integrations/sample", { method: "POST", body: JSON.stringify(value) }),
   integrationData: () => request<IntegrationData[]>("/api/integrations/data/all"),
 };
